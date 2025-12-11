@@ -41,7 +41,10 @@ impl ModelManager {
   // scan ./models directory for files/folders that look like models
   fn scan_models(&mut self) {
     self.models.clear();
+    
     let dir = PathBuf::from("./models");
+    println!("DEBUG: scanning folder = {:?}", dir);
+
     if let Ok(entries) = fs::read_dir(dir) {
       for entry in entries.flatten() {
         let p = entry.path();

@@ -1,7 +1,7 @@
 // src/components/ChatView.tsx in
 import React, { useRef, useState } from "react";
 import type { Message } from "../App";
-import { invoke } from "@tauri-apps/api/tauri";
+
 
 export default function ChatView({ messages, onSend }: { messages: Message[]; onSend: (t: string) => void }) {
   const [input, setInput] = useState("");
