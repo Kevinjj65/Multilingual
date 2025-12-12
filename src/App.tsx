@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import ModelList from "./components/ModelList";
 import ChatView from "./components/ChatView";
 import Controls from "./components/Controls";
-
+import axiosInstance from "./lib/axiosInstance";
 export type Message = { id: string; role: "user" | "assistant" | "system"; text: string };
 
 export default function App() {
@@ -50,7 +50,7 @@ export default function App() {
   async function refreshModels() {
     try {
       // calls Rust `list_models` - returns string[]
-      const m = await invoke<string[]>("list_models");
+      const m = await axiosInstance.get("/list_llms").then((res) => res.data.downloaded_llms);
       setModels(m);
       setLogs((l) => [...l, `Found ${m.length} model(s)`]);
     } catch (err) {
