@@ -69,6 +69,8 @@ export default function App() {
     const timeoutMs = 30_000; // 30s timeout to reduce premature aborts
     const timeoutId = setTimeout(() => controller.abort("timeout"), timeoutMs);
 
+    let revealTimer: number | null = null;
+
     try {
       setRunning(true);
 
@@ -94,6 +96,29 @@ export default function App() {
       const decoder = new TextDecoder("utf-8");
       let buffer = "";
       let translatedSentences: string[] = [];
+      // Word-by-word reveal queue to mimic ChatGPT streaming
+      let wordQueue: string[] = [];
+
+      const startReveal = () => {
+        if (revealTimer !== null) return;
+        revealTimer = window.setInterval(() => {
+          if (wordQueue.length === 0) {
+            // pause until more words arrive
+            return;
+          }
+          const nextWord = wordQueue.shift()!;
+          // Append next word to the last assistant message
+          setMessages((prev) => {
+            const copy = [...prev];
+            const lastMsg = copy[copy.length - 1];
+            if (lastMsg && lastMsg.role === "assistant") {
+              const newText = (lastMsg.text ? lastMsg.text + " " : "") + nextWord;
+              copy[copy.length - 1] = { ...lastMsg, text: newText };
+            }
+            return copy;
+          });
+        }, 45); // ~45ms per word for a natural flow
+      };
 
       const processEvent = (eventData: string) => {
         console.log("[SSE data]", eventData);
@@ -103,22 +128,27 @@ export default function App() {
           if (payload.type === "meta") {
             setLogs((l) => [...l, `English input: ${payload.english_in}`, `Prompt generated`]);
           } else if (payload.type === "sentence") {
+            // Push words of this sentence into the reveal queue
+            const words = String(payload.translated).split(/\s+/).filter(Boolean);
+            wordQueue.push(...words);
             translatedSentences.push(payload.translated);
-            const fullText = translatedSentences.join(" ");
-            setMessages((prev) => {
-              const copy = [...prev];
-              const lastMsg = copy[copy.length - 1];
-              if (lastMsg && lastMsg.role === "assistant") {
-                copy[copy.length - 1] = { ...lastMsg, text: fullText };
-              }
-              return copy;
-            });
+            // Start reveal if not already running
+            startReveal();
           } else if (payload.type === "done") {
             setRunning(false);
             setLogs((l) => [...l, `Response complete`]);
+            // Stop reveal timer when stream finishes
+            if (revealTimer !== null) {
+              window.clearInterval(revealTimer);
+              revealTimer = null;
+            }
           } else if (payload.type === "error") {
             setRunning(false);
             setLogs((l) => [...l, `Backend error: ${payload.message}`]);
+            if (revealTimer !== null) {
+              window.clearInterval(revealTimer);
+              revealTimer = null;
+            }
           }
         } catch (e) {
           console.error("Failed to parse event:", eventData, e);
@@ -152,11 +182,24 @@ export default function App() {
         processEvent(buffer.trim().slice(6));
       }
       setRunning(false);
+      if (revealTimer !== null) {
+        window.clearInterval(revealTimer);
+        revealTimer = null;
+      }
     } catch (err: any) {
       const msg = err?.name === "AbortError" ? `Request aborted: ${String(err?.message)}` : String(err);
       console.error("[stream error]", err);
       setLogs((l) => [...l, `Stream error: ${msg}`]);
       setRunning(false);
+      // Ensure timer cleanup on errors
+      // revealTimer may remain set if error occurs mid-stream
+      // so clear it defensively
+      // (no-op if already null)
+      //
+      if (revealTimer !== null) {
+        window.clearInterval(revealTimer);
+        revealTimer = null;
+      }
     } finally {
       clearTimeout(timeoutId);
     }
