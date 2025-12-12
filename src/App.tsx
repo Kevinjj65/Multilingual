@@ -13,6 +13,7 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [language, setLanguage] = useState<string>("auto");
+  const [activeTab, setActiveTab] = useState<"Pipeline" | "Translator" | "LLM" | "RAG">("Pipeline");
 
   useEffect(() => {
     // initial load
@@ -216,56 +217,91 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 p-6">
-      <div className="max-w-6xl mx-auto grid grid-cols-12 gap-6">
-        {/* Left panel: Models + Controls */}
-        <aside className="col-span-3 p-4 bg-white dark:bg-slate-800 rounded-lg shadow">
-          <h2 className="text-lg font-semibold mb-3">Models</h2>
-          <ModelList
-            models={models}
-            selected={selectedModel}
-            onRefresh={refreshModels}
-            onLoad={loadModel}
-          />
-          <div className="mt-4">
-            <Controls
-              running={running}
-              onStart={startModel}
-              onStop={stopModel}
-              language={language}
-              setLanguage={setLanguage}
-            />
-          </div>
-
-          <div className="mt-4">
+      <div className="max-w-6xl mx-auto">
+        {/* Tabs */}
+        <div className="mb-4 flex gap-2">
+          {(["Pipeline","Translator","LLM","RAG"] as const).map((tab) => (
             <button
-              className="text-sm px-3 py-2 bg-gray-200 dark:bg-slate-700 rounded"
-              onClick={mockPopulateMessages}
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`px-3 py-2 rounded border ${activeTab === tab ? "bg-indigo-600 text-white border-indigo-600" : "bg-white dark:bg-slate-800"}`}
             >
-              Seed demo conversation
+              {tab}
             </button>
-          </div>
+          ))}
+        </div>
 
-          <div className="mt-4 text-xs text-gray-500 dark:text-gray-400">
-            <div>Logs:</div>
-            <div className="h-40 overflow-y-auto bg-slate-50 dark:bg-slate-900 p-2 rounded border">
-              {logs.map((l, i) => (
-                <div key={i} className="font-mono text-[12px]">
-                  {l}
+        {activeTab === "Pipeline" && (
+          <div className="grid grid-cols-12 gap-6">
+            {/* Left panel: Models + Controls */}
+            <aside className="col-span-3 p-4 bg-white dark:bg-slate-800 rounded-lg shadow">
+              <h2 className="text-lg font-semibold mb-3">Models</h2>
+              <ModelList
+                models={models}
+                selected={selectedModel}
+                onRefresh={refreshModels}
+                onLoad={loadModel}
+              />
+              <div className="mt-4">
+                <Controls
+                  running={running}
+                  onStart={startModel}
+                  onStop={stopModel}
+                  language={language}
+                  setLanguage={setLanguage}
+                />
+              </div>
+
+              <div className="mt-4">
+                <button
+                  className="text-sm px-3 py-2 bg-gray-200 dark:bg-slate-700 rounded"
+                  onClick={mockPopulateMessages}
+                >
+                  Seed demo conversation
+                </button>
+              </div>
+
+              <div className="mt-4 text-xs text-gray-500 dark:text-gray-400">
+                <div>Logs:</div>
+                <div className="h-40 overflow-y-auto bg-slate-50 dark:bg-slate-900 p-2 rounded border">
+                  {logs.map((l, i) => (
+                    <div key={i} className="font-mono text-[12px]">
+                      {l}
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </div>
-        </aside>
+              </div>
+            </aside>
 
-        {/* Main chat area */}
-        <main className="col-span-9 p-4 bg-white dark:bg-slate-800 rounded-lg shadow">
-          <div className="flex items-center justify-between mb-4">
-            <h1 className="text-2xl font-bold"> Edge Multilingual Assistant</h1>
-            <div className="text-sm text-gray-500 dark:text-gray-400">Model: {selectedModel ?? "—"}</div>
-          </div>
+            {/* Main chat area */}
+            <main className="col-span-9 p-4 bg-white dark:bg-slate-800 rounded-lg shadow">
+              <div className="flex items-center justify-between mb-4">
+                <h1 className="text-2xl font-bold">Edge Multilingual Assistant</h1>
+                <div className="text-sm text-gray-500 dark:text-gray-400">Model: {selectedModel ?? "—"}</div>
+              </div>
 
-          <ChatView messages={messages} onSend={sendUserMessage} />
-        </main>
+              <ChatView messages={messages} onSend={sendUserMessage} />
+            </main>
+          </div>
+        )}
+
+        {activeTab === "Translator" && (
+          <div className="p-6 bg-white dark:bg-slate-800 rounded-lg shadow">
+            <h1 className="text-2xl font-bold">Translator</h1>
+          </div>
+        )}
+
+        {activeTab === "LLM" && (
+          <div className="p-6 bg-white dark:bg-slate-800 rounded-lg shadow">
+            <h1 className="text-2xl font-bold">LLM</h1>
+          </div>
+        )}
+
+        {activeTab === "RAG" && (
+          <div className="p-6 bg-white dark:bg-slate-800 rounded-lg shadow">
+            <h1 className="text-2xl font-bold">RAG</h1>
+          </div>
+        )}
       </div>
     </div>
   );
