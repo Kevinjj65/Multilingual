@@ -1,7 +1,5 @@
 // src/App.tsx
 import React, { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import ModelList from "./components/ModelList";
 import ChatView from "./components/ChatView";
 import Controls from "./components/Controls";
@@ -19,32 +17,6 @@ export default function App() {
   useEffect(() => {
     // initial load
     refreshModels();
-
-    // listen to streaming tokens from backend
-    const unlistenStream = listen<string>("model-output", (e) => {
-      // append token to last assistant message (streaming)
-      setMessages((prev) => {
-        const last = prev[prev.length - 1];
-        if (!last || last.role !== "assistant") {
-          // start a new assistant message
-          return [...prev, { id: String(Date.now()), role: "assistant", text: e.payload }];
-        }
-        // append to last
-        const copy = prev.slice(0, -1);
-        copy.push({ ...last, text: last.text + e.payload });
-        return copy;
-      });
-    });
-
-    const unlistenStatus = listen<{ running: boolean }>("model-status", (e) => {
-      setRunning(e.payload.running);
-      setLogs((l) => [...l, `Status: running=${e.payload.running}`]);
-    });
-
-    return () => {
-      unlistenStream.then((f) => f());
-      unlistenStatus.then((f) => f());
-    };
   }, []);
 
   async function refreshModels() {
@@ -74,35 +46,119 @@ export default function App() {
       setLogs((l) => [...l, `No model selected`]);
       return;
     }
-    setMessages((m) => [...m, { id: String(Date.now()), role: "user", text: "Running model..." }]);
-    try {
-      await invoke("start_model", { id: selectedModel });
-      setRunning(true);
-      setLogs((l) => [...l, `Started ${selectedModel}`]);
-    } catch (err) {
-      setLogs((l) => [...l, `start_model error: ${String(err)}`]);
-    }
+    setRunning(true);
+    setLogs((l) => [...l, `Started ${selectedModel}`]);
   }
 
   async function stopModel() {
-    try {
-      await invoke("stop_model");
-      setRunning(false);
-      setLogs((l) => [...l, `Stopped model`]);
-    } catch (err) {
-      setLogs((l) => [...l, `stop_model error: ${String(err)}`]);
-    }
+    setRunning(false);
+    setLogs((l) => [...l, `Stopped model`]);
   }
 
   async function sendUserMessage(text: string) {
-    // push user message and create an empty assistant message to stream into
-    setMessages((m) => [...m, { id: String(Date.now()), role: "user", text }]);
-    setMessages((m) => [...m, { id: String(Date.now() + 1), role: "assistant", text: "" }]);
-    // tell Rust to run the model on prompt (Rust should read latest messages or accept prompt)
+    // Add user message to chat
+    const userMsgId = String(Date.now());
+    setMessages((m) => [...m, { id: userMsgId, role: "user", text }]);
+
+    // Create empty assistant message to stream into
+    const assistantMsgId = String(Date.now() + 1);
+    setMessages((m) => [...m, { id: assistantMsgId, role: "assistant", text: "" }]);
+
+    // Use fetch + ReadableStream for SSE in browser/Tauri WebView
+    const controller = new AbortController();
+    const timeoutMs = 30_000; // 30s timeout to reduce premature aborts
+    const timeoutId = setTimeout(() => controller.abort("timeout"), timeoutMs);
+
     try {
-      await invoke("run_prompt", { prompt: text, model: selectedModel ?? "", language });
-    } catch (err) {
-      setLogs((l) => [...l, `run_prompt error: ${String(err)}`]);
+      setRunning(true);
+
+      const res = await fetch(`http://localhost:5005/infer`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify({
+          text,
+          lang: language === "auto" ? "en" : language,
+          stream: true,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!res.body) {
+        throw new Error("No response body (stream) from /infer");
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
+      let translatedSentences: string[] = [];
+
+      const processEvent = (eventData: string) => {
+        console.log("[SSE data]", eventData);
+        try {
+          const payload = JSON.parse(eventData);
+
+          if (payload.type === "meta") {
+            setLogs((l) => [...l, `English input: ${payload.english_in}`, `Prompt generated`]);
+          } else if (payload.type === "sentence") {
+            translatedSentences.push(payload.translated);
+            const fullText = translatedSentences.join(" ");
+            setMessages((prev) => {
+              const copy = [...prev];
+              const lastMsg = copy[copy.length - 1];
+              if (lastMsg && lastMsg.role === "assistant") {
+                copy[copy.length - 1] = { ...lastMsg, text: fullText };
+              }
+              return copy;
+            });
+          } else if (payload.type === "done") {
+            setRunning(false);
+            setLogs((l) => [...l, `Response complete`]);
+          } else if (payload.type === "error") {
+            setRunning(false);
+            setLogs((l) => [...l, `Backend error: ${payload.message}`]);
+          }
+        } catch (e) {
+          console.error("Failed to parse event:", eventData, e);
+          setLogs((l) => [...l, `Parse error: ${String(e)}`]);
+        }
+      };
+
+      // Read the stream loop
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunkText = decoder.decode(value, { stream: true });
+        console.log("[chunk]", chunkText);
+        buffer += chunkText;
+
+        const events = buffer.split("\n\n");
+        for (let i = 0; i < events.length - 1; i++) {
+          const event = events[i].trim();
+          if (event.startsWith("data: ")) {
+            const eventData = event.slice(6);
+            processEvent(eventData);
+          } else {
+            console.log("[SSE unknown event format]", event);
+          }
+        }
+        buffer = events[events.length - 1];
+      }
+
+      // Flush remaining buffer
+      if (buffer.trim().startsWith("data: ")) {
+        processEvent(buffer.trim().slice(6));
+      }
+      setRunning(false);
+    } catch (err: any) {
+      const msg = err?.name === "AbortError" ? `Request aborted: ${String(err?.message)}` : String(err);
+      console.error("[stream error]", err);
+      setLogs((l) => [...l, `Stream error: ${msg}`]);
+      setRunning(false);
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
