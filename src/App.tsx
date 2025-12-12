@@ -10,6 +10,7 @@ export type Message = { id: string; role: "user" | "assistant" | "system"; text:
 export default function App() {
   const [models, setModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const [loadedModel, setLoadedModel] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
@@ -18,8 +19,21 @@ export default function App() {
 
   useEffect(() => {
     // initial load
+    fetchCurrentLlm();
     refreshModels();
   }, []);
+
+  async function fetchCurrentLlm() {
+    try {
+      const res = await axiosInstance.get("/current_llm");
+      const data = res.data || {};
+      setLoadedModel(data.loaded_llm || null);
+      setSelectedModel(data.loaded_llm || null);
+      setLogs((l) => [...l, `Current LLM: ${data.loaded_llm || "none"}`]);
+    } catch (e: any) {
+      setLogs((l) => [...l, `Failed to get current LLM: ${String(e?.message || e)}`]);
+    }
+  }
 
   async function refreshModels() {
     try {
@@ -37,6 +51,7 @@ export default function App() {
     try {
       await axiosInstance.post("/load_llm", { name: modelName });
       setSelectedModel(modelName);
+      setLoadedModel(modelName);
       setLogs((l) => [...l, `Loaded ${modelName}`]);
     } catch (err) {
       setLogs((l) => [...l, `load_model error: ${String(err)}`]);
@@ -236,6 +251,7 @@ export default function App() {
           <PipelinePage
             models={models}
             selectedModel={selectedModel}
+            loadedModel={loadedModel}
             running={running}
             messages={messages}
             logs={logs}

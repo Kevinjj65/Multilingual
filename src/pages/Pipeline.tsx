@@ -7,6 +7,7 @@ import type { Message } from "../App";
 type Props = {
   models: string[];
   selectedModel: string | null;
+  loadedModel: string | null;
   running: boolean;
   messages: Message[];
   logs: string[];
@@ -22,6 +23,7 @@ type Props = {
 export default function PipelinePage({
   models,
   selectedModel,
+  loadedModel,
   running,
   messages,
   logs,
@@ -37,7 +39,7 @@ export default function PipelinePage({
     <div className="grid grid-cols-12 gap-6">
       <aside className="col-span-3 p-4 bg-white dark:bg-slate-800 rounded-lg shadow">
         <h2 className="text-lg font-semibold mb-3">Models</h2>
-        <ModelList models={models} selected={selectedModel} onRefresh={onRefreshModels} onLoad={onLoadModel} />
+        <ModelList models={models} selected={selectedModel} loadedModel={loadedModel} onRefresh={onRefreshModels} onLoad={onLoadModel} />
         <div className="mt-4">
           <Controls running={running} onStart={onStartModel} onStop={onStopModel} language={language} setLanguage={setLanguage} />
         </div>
