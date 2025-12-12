@@ -82,7 +82,7 @@ export default function App() {
         },
         body: JSON.stringify({
           text,
-          lang: language === "auto" ? "en" : language,
+          lang: language === "auto" ? "auto" : language,
           stream: true,
         }),
         signal: controller.signal,
