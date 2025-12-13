@@ -4,11 +4,12 @@ import React from "react";
 type Props = {
   models: string[];
   selected?: string | null;
+  loadedModel?: string | null;
   onRefresh: () => void;
   onLoad: (id: string) => void;
 };
 
-export default function ModelList({ models, selected, onRefresh, onLoad }: Props) {
+export default function ModelList({ models, selected, loadedModel, onRefresh, onLoad }: Props) {
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
@@ -22,12 +23,16 @@ export default function ModelList({ models, selected, onRefresh, onLoad }: Props
           <div key={m} className={`p-2 border rounded flex items-center justify-between ${selected === m ? "ring-2 ring-indigo-400" : ""}`}>
             <div className="truncate">{m}</div>
             <div className="flex gap-2">
-              <button
-                className="text-xs px-2 py-1 bg-green-100 rounded"
-                onClick={() => onLoad(m)}
-              >
-                Load
-              </button>
+              {loadedModel === m ? (
+                <span className="text-xs px-2 py-1 bg-green-100 text-green-800 rounded">Loaded</span>
+              ) : (
+                <button
+                  className="text-xs px-2 py-1 bg-green-100 rounded"
+                  onClick={() => onLoad(m)}
+                >
+                  Load
+                </button>
+              )}
             </div>
           </div>
         ))}
