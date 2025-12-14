@@ -4,6 +4,54 @@ import SystemMetrics from "../components/SystemMetrics";
 
 type RagDoc = { id: string; text: string };
 
+interface RagMetrics {
+  documents_indexed: number;
+  index_size: {
+    index_file_mb: number;
+    metadata_file_mb: number;
+    total_mb: number;
+  };
+  indexing_time_s: number;
+  memory: {
+    after_indexing_rss_mb: number;
+    baseline_rss_mb: number;
+    indexing_increase_mb: number;
+  };
+  ok: boolean;
+  rag_impact?: {
+    skipped?: string;
+    answer_length_diff?: number;
+    answer_with_rag?: string;
+    answer_without_rag?: string;
+    contexts_used?: number;
+    inference_time_with_rag_s?: number;
+    inference_time_without_rag_s?: number;
+    query?: string;
+    rag_overhead_s?: number;
+  };
+  relevance: {
+    avg_recall_at_3: number;
+    perfect_recalls: number;
+    queries_evaluated: number;
+  };
+  restoration: {
+    original_doc_count: number;
+    restored_doc_count: number;
+  };
+  retrieval_performance: {
+    avg_query_time_ms: number;
+    max_query_time_ms: number;
+    min_query_time_ms: number;
+    topk_avg_times_ms: {
+      [key: string]: number;
+    };
+  };
+  vram: {
+    after_indexing_used_mb: number;
+    baseline_used_mb: number;
+  };
+}
+
 export default function RAGPage() {
   const [docs, setDocs] = useState<RagDoc[]>([]);
   const [loading, setLoading] = useState(false);
@@ -14,6 +62,10 @@ export default function RAGPage() {
   const [similarity, setSimilarity] = useState<number>(0.35);
   const [searching, setSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<string[]>([]);
+  const [metrics, setMetrics] = useState<RagMetrics | null>(null);
+  const [isBenchmarking, setIsBenchmarking] = useState(false);
+  const [benchmarkLlm, setBenchmarkLlm] = useState("llama");
+  const [showLlmOption, setShowLlmOption] = useState(false);
 
   async function loadRag() {
     try {
@@ -69,6 +121,29 @@ export default function RAGPage() {
       setLogs((l) => [...l, `Failed to search RAG: ${String(e?.message || e)}`]);
     } finally {
       setSearching(false);
+    }
+  }
+
+  async function benchmarkRag(withLlm: boolean) {
+    setIsBenchmarking(true);
+    setMetrics(null);
+    const benchmarkType = withLlm ? `RAG with LLM (${benchmarkLlm})` : "RAG without LLM";
+    setLogs((l) => [...l, `Starting benchmark: ${benchmarkType}...`]);
+
+    try {
+      const body = withLlm ? { llm_name: benchmarkLlm } : {};
+      const res = await axiosInstance.post<RagMetrics>(
+        "/rag_metrics",
+        body,
+        { timeout: 120_000 }
+      );
+      setMetrics(res.data);
+      setLogs((l) => [...l, `Benchmark completed successfully!`]);
+    } catch (err: any) {
+      console.error("RAG benchmark error:", err);
+      setLogs((l) => [...l, `Benchmark error: ${err?.response?.data?.error || err.message}`]);
+    } finally {
+      setIsBenchmarking(false);
     }
   }
 
@@ -137,7 +212,45 @@ export default function RAGPage() {
         </div>
 
         <div className="mt-4">
-          <SystemMetrics />
+          <h3 className="text-md font-semibold mb-2">Benchmark RAG</h3>
+          <div className="space-y-2">
+            <button
+              onClick={() => benchmarkRag(false)}
+              disabled={isBenchmarking}
+              className={`w-full px-3 py-2 rounded ${isBenchmarking ? "bg-gray-300" : "bg-blue-600 text-white"}`}
+            >
+              {isBenchmarking ? "Benchmarking..." : "Benchmark (No LLM)"}
+            </button>
+            <button
+              onClick={() => setShowLlmOption(!showLlmOption)}
+              disabled={isBenchmarking}
+              className={`w-full px-3 py-2 rounded ${isBenchmarking ? "bg-gray-300" : "bg-purple-600 text-white"}`}
+            >
+              Benchmark (With LLM)
+            </button>
+          </div>
+          {showLlmOption && (
+            <div className="mt-2 p-2 bg-slate-50 dark:bg-slate-900 rounded">
+              <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">LLM Name</label>
+              <input
+                type="text"
+                value={benchmarkLlm}
+                onChange={(e) => setBenchmarkLlm(e.target.value)}
+                className="w-full px-2 py-1 text-sm rounded border bg-white dark:bg-slate-700"
+                placeholder="llama"
+              />
+              <button
+                onClick={() => {
+                  benchmarkRag(true);
+                  setShowLlmOption(false);
+                }}
+                disabled={isBenchmarking || !benchmarkLlm.trim()}
+                className={`mt-2 w-full px-3 py-1 text-sm rounded ${isBenchmarking ? "bg-gray-300" : "bg-purple-600 text-white"}`}
+              >
+                Start Benchmark
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="mt-4 text-xs text-gray-500 dark:text-gray-400">
@@ -191,6 +304,147 @@ export default function RAGPage() {
             </div>
           )}
         </div>
+
+        {metrics && (
+          <div className="mt-6">
+            <h2 className="text-lg font-semibold mb-3">RAG Benchmark Metrics</h2>
+            <div className="grid grid-cols-2 gap-4">
+              {/* Documents & Indexing */}
+              <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                <h3 className="font-semibold text-blue-800 dark:text-blue-300 mb-2">Indexing</h3>
+                <div className="text-sm space-y-1">
+                  <div><span className="font-medium">Indexed:</span> {metrics.documents_indexed} docs</div>
+                  <div><span className="font-medium">Time:</span> {metrics.indexing_time_s.toFixed(3)}s</div>
+                  <div className="mt-2 font-medium text-xs">Index Size:</div>
+                  <div className="ml-2">{metrics.index_size.index_file_mb.toFixed(4)} MB (data)</div>
+                  <div className="ml-2">{metrics.index_size.metadata_file_mb.toFixed(4)} MB (meta)</div>
+                  <div className="ml-2">{metrics.index_size.total_mb.toFixed(4)} MB (total)</div>
+                </div>
+              </div>
+
+              {/* Restoration */}
+              <div className="p-4 bg-green-50 dark:bg-green-900/20 rounded-lg">
+                <h3 className="font-semibold text-green-800 dark:text-green-300 mb-2">Restoration</h3>
+                <div className="text-sm space-y-1">
+                  <div><span className="font-medium">Original:</span> {metrics.restoration.original_doc_count} docs</div>
+                  <div><span className="font-medium">Restored:</span> {metrics.restoration.restored_doc_count} docs</div>
+                  <div className="mt-2 w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
+                    <div
+                      className="bg-green-600 h-2.5 rounded-full"
+                      style={{ width: `${metrics.restoration.restored_doc_count > 0 ? (metrics.restoration.restored_doc_count / metrics.restoration.original_doc_count * 100) : 0}%` }}
+                    ></div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Retrieval Performance */}
+              <div className="p-4 bg-purple-50 dark:bg-purple-900/20 rounded-lg">
+                <h3 className="font-semibold text-purple-800 dark:text-purple-300 mb-2">Retrieval Performance</h3>
+                <div className="text-sm space-y-1">
+                  <div><span className="font-medium">Avg Query:</span> {metrics.retrieval_performance.avg_query_time_ms.toFixed(2)} ms</div>
+                  <div><span className="font-medium">Min Query:</span> {metrics.retrieval_performance.min_query_time_ms.toFixed(2)} ms</div>
+                  <div><span className="font-medium">Max Query:</span> {metrics.retrieval_performance.max_query_time_ms.toFixed(2)} ms</div>
+                  <div className="mt-2 font-medium text-xs">Top-K Times:</div>
+                  {Object.entries(metrics.retrieval_performance.topk_avg_times_ms).map(([k, v]) => (
+                    <div key={k} className="ml-2 text-xs">Top {k}: {v.toFixed(2)} ms</div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Relevance */}
+              <div className="p-4 bg-orange-50 dark:bg-orange-900/20 rounded-lg">
+                <h3 className="font-semibold text-orange-800 dark:text-orange-300 mb-2">Relevance</h3>
+                <div className="text-sm space-y-1">
+                  <div><span className="font-medium">Avg Recall@3:</span> {metrics.relevance.avg_recall_at_3.toFixed(3)}</div>
+                  <div><span className="font-medium">Perfect Recalls:</span> {metrics.relevance.perfect_recalls}/{metrics.relevance.queries_evaluated}</div>
+                  <div className="mt-2 w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
+                    <div
+                      className="bg-orange-600 h-2.5 rounded-full"
+                      style={{ width: `${metrics.relevance.avg_recall_at_3 * 100}%` }}
+                    ></div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Memory */}
+              <div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-lg">
+                <h3 className="font-semibold text-red-800 dark:text-red-300 mb-2">Memory (RAM)</h3>
+                <div className="text-sm space-y-1">
+                  <div><span className="font-medium">Baseline:</span> {metrics.memory.baseline_rss_mb.toFixed(2)} MB</div>
+                  <div><span className="font-medium">After Index:</span> {metrics.memory.after_indexing_rss_mb.toFixed(2)} MB</div>
+                  <div><span className="font-medium">Increase:</span> {metrics.memory.indexing_increase_mb.toFixed(2)} MB</div>
+                  <div className="mt-2 w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
+                    <div
+                      className="bg-red-600 h-2.5 rounded-full"
+                      style={{ width: `${Math.min((metrics.memory.indexing_increase_mb / 2000) * 100, 100)}%` }}
+                    ></div>
+                  </div>
+                </div>
+              </div>
+
+              {/* VRAM */}
+              <div className="p-4 bg-pink-50 dark:bg-pink-900/20 rounded-lg">
+                <h3 className="font-semibold text-pink-800 dark:text-pink-300 mb-2">VRAM</h3>
+                <div className="text-sm space-y-1">
+                  <div><span className="font-medium">Baseline:</span> {metrics.vram.baseline_used_mb.toFixed(2)} MB</div>
+                  <div><span className="font-medium">After Index:</span> {metrics.vram.after_indexing_used_mb.toFixed(2)} MB</div>
+                  <div className="mt-2 w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
+                    <div
+                      className="bg-pink-600 h-2.5 rounded-full"
+                      style={{ width: `${Math.min((metrics.vram.after_indexing_used_mb / 4000) * 100, 100)}%` }}
+                    ></div>
+                  </div>
+                </div>
+              </div>
+
+              {/* RAG Impact (if using LLM) */}
+              {metrics.rag_impact && !metrics.rag_impact.skipped && (
+                <div className="col-span-2 p-4 bg-cyan-50 dark:bg-cyan-900/20 rounded-lg">
+                  <h3 className="font-semibold text-cyan-800 dark:text-cyan-300 mb-2">RAG Impact (with LLM)</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <div className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">Query:</div>
+                      <div className="p-2 bg-white dark:bg-slate-800 rounded text-xs italic">
+                        {metrics.rag_impact.query}
+                      </div>
+                    </div>
+                    <div className="space-y-1 text-sm">
+                      <div><span className="font-medium">Contexts Used:</span> {metrics.rag_impact.contexts_used}</div>
+                      <div><span className="font-medium">Answer Length Diff:</span> {metrics.rag_impact.answer_length_diff}</div>
+                      <div><span className="font-medium">Inference w/RAG:</span> {metrics.rag_impact.inference_time_with_rag_s?.toFixed(3)}s</div>
+                      <div><span className="font-medium">Inference w/o RAG:</span> {metrics.rag_impact.inference_time_without_rag_s?.toFixed(3)}s</div>
+                      <div><span className="font-medium text-cyan-700 dark:text-cyan-300">RAG Overhead:</span> {metrics.rag_impact.rag_overhead_s?.toFixed(3)}s</div>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-4">
+                    <div>
+                      <div className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Answer with RAG:</div>
+                      <div className="p-2 bg-white dark:bg-slate-800 rounded text-xs break-words">
+                        {metrics.rag_impact.answer_with_rag?.substring(0, 150)}...
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Answer without RAG:</div>
+                      <div className="p-2 bg-white dark:bg-slate-800 rounded text-xs break-words">
+                        {metrics.rag_impact.answer_without_rag?.substring(0, 150)}...
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Skipped Message */}
+              {metrics.rag_impact?.skipped && (
+                <div className="col-span-2 p-4 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg">
+                  <h3 className="font-semibold text-yellow-800 dark:text-yellow-300 mb-2">RAG Impact</h3>
+                  <div className="text-sm text-yellow-700 dark:text-yellow-300">
+                    {metrics.rag_impact.skipped}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );
