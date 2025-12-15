@@ -1,56 +1,44 @@
 // src/App.tsx
 import React, { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import ModelList from "./components/ModelList";
-import ChatView from "./components/ChatView";
-import Controls from "./components/Controls";
-
+import PipelinePage from "./pages/Pipeline";
+import TranslatorPage from "./pages/Translator";
+import LLMPage from "./pages/LLM";
+import RAGPage from "./pages/RAG";
+import axiosInstance from "./lib/axiosInstance";
 export type Message = { id: string; role: "user" | "assistant" | "system"; text: string };
 
 export default function App() {
   const [models, setModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const [loadedModel, setLoadedModel] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [language, setLanguage] = useState<string>("auto");
+  const [activeTab, setActiveTab] = useState<"Pipeline" | "Translator" | "LLM" | "RAG">("Pipeline");
 
   useEffect(() => {
     // initial load
+    fetchCurrentLlm();
     refreshModels();
-
-    // listen to streaming tokens from backend
-    const unlistenStream = listen<string>("model-output", (e) => {
-      // append token to last assistant message (streaming)
-      setMessages((prev) => {
-        const last = prev[prev.length - 1];
-        if (!last || last.role !== "assistant") {
-          // start a new assistant message
-          return [...prev, { id: String(Date.now()), role: "assistant", text: e.payload }];
-        }
-        // append to last
-        const copy = prev.slice(0, -1);
-        copy.push({ ...last, text: last.text + e.payload });
-        return copy;
-      });
-    });
-
-    const unlistenStatus = listen<{ running: boolean }>("model-status", (e) => {
-      setRunning(e.payload.running);
-      setLogs((l) => [...l, `Status: running=${e.payload.running}`]);
-    });
-
-    return () => {
-      unlistenStream.then((f) => f());
-      unlistenStatus.then((f) => f());
-    };
   }, []);
+
+  async function fetchCurrentLlm() {
+    try {
+      const res = await axiosInstance.get("/current_llm");
+      const data = res.data || {};
+      setLoadedModel(data.loaded_llm || null);
+      setSelectedModel(data.loaded_llm || null);
+      setLogs((l) => [...l, `Current LLM: ${data.loaded_llm || "none"}`]);
+    } catch (e: any) {
+      setLogs((l) => [...l, `Failed to get current LLM: ${String(e?.message || e)}`]);
+    }
+  }
 
   async function refreshModels() {
     try {
       // calls Rust `list_models` - returns string[]
-      const m = await invoke<string[]>("list_models");
+      const m = await axiosInstance.get("/list_llms").then((res) => res.data.downloaded_llms);
       setModels(m);
       setLogs((l) => [...l, `Found ${m.length} model(s)`]);
     } catch (err) {
@@ -61,11 +49,23 @@ export default function App() {
 
   async function loadModel(modelName: string) {
     try {
-      await invoke("load_model", { id: modelName });
+      await axiosInstance.post("/load_llm", { name: modelName });
       setSelectedModel(modelName);
+      setLoadedModel(modelName);
       setLogs((l) => [...l, `Loaded ${modelName}`]);
     } catch (err) {
       setLogs((l) => [...l, `load_model error: ${String(err)}`]);
+    }
+  }
+
+  async function unloadModel() {
+    try {
+      await axiosInstance.post("/unload_llm");
+      setLoadedModel(null);
+      setSelectedModel(null);
+      setLogs((l) => [...l, `Unloaded model`]);
+    } catch (err) {
+      setLogs((l) => [...l, `unload_model error: ${String(err)}`]);
     }
   }
 
@@ -74,35 +74,162 @@ export default function App() {
       setLogs((l) => [...l, `No model selected`]);
       return;
     }
-    setMessages((m) => [...m, { id: String(Date.now()), role: "user", text: "Running model..." }]);
-    try {
-      await invoke("start_model", { id: selectedModel });
-      setRunning(true);
-      setLogs((l) => [...l, `Started ${selectedModel}`]);
-    } catch (err) {
-      setLogs((l) => [...l, `start_model error: ${String(err)}`]);
-    }
+    setRunning(true);
+    setLogs((l) => [...l, `Started ${selectedModel}`]);
   }
 
   async function stopModel() {
-    try {
-      await invoke("stop_model");
-      setRunning(false);
-      setLogs((l) => [...l, `Stopped model`]);
-    } catch (err) {
-      setLogs((l) => [...l, `stop_model error: ${String(err)}`]);
-    }
+    setRunning(false);
+    setLogs((l) => [...l, `Stopped model`]);
   }
 
   async function sendUserMessage(text: string) {
-    // push user message and create an empty assistant message to stream into
-    setMessages((m) => [...m, { id: String(Date.now()), role: "user", text }]);
-    setMessages((m) => [...m, { id: String(Date.now() + 1), role: "assistant", text: "" }]);
-    // tell Rust to run the model on prompt (Rust should read latest messages or accept prompt)
+    // Add user message to chat
+    const userMsgId = String(Date.now());
+    setMessages((m) => [...m, { id: userMsgId, role: "user", text }]);
+
+    // Create empty assistant message to stream into
+    const assistantMsgId = String(Date.now() + 1);
+    setMessages((m) => [...m, { id: assistantMsgId, role: "assistant", text: "" }]);
+
+    // Use fetch + ReadableStream for SSE in browser/Tauri WebView
+    const controller = new AbortController();
+    const timeoutMs = 30_000; // 30s timeout to reduce premature aborts
+    const timeoutId = setTimeout(() => controller.abort("timeout"), timeoutMs);
+
+    let revealTimer: number | null = null;
+
     try {
-      await invoke("run_prompt", { prompt: text, model: selectedModel ?? "", language });
-    } catch (err) {
-      setLogs((l) => [...l, `run_prompt error: ${String(err)}`]);
+      setRunning(true);
+
+      const res = await fetch(`http://localhost:5005/infer`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify({
+          text,
+          lang: language === "auto" ? "auto" : language,
+          stream: true,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!res.body) {
+        throw new Error("No response body (stream) from /infer");
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
+      let translatedSentences: string[] = [];
+      // Word-by-word reveal queue to mimic ChatGPT streaming
+      let wordQueue: string[] = [];
+
+      const startReveal = () => {
+        if (revealTimer !== null) return;
+        revealTimer = window.setInterval(() => {
+          if (wordQueue.length === 0) {
+            // pause until more words arrive
+            return;
+          }
+          const nextWord = wordQueue.shift()!;
+          // Append next word to the last assistant message
+          setMessages((prev) => {
+            const copy = [...prev];
+            const lastMsg = copy[copy.length - 1];
+            if (lastMsg && lastMsg.role === "assistant") {
+              const newText = (lastMsg.text ? lastMsg.text + " " : "") + nextWord;
+              copy[copy.length - 1] = { ...lastMsg, text: newText };
+            }
+            return copy;
+          });
+        }, 45); // ~45ms per word for a natural flow
+      };
+
+      const processEvent = (eventData: string) => {
+        console.log("[SSE data]", eventData);
+        try {
+          const payload = JSON.parse(eventData);
+
+          if (payload.type === "meta") {
+            setLogs((l) => [...l, `English input: ${payload.english_in}`, `Prompt generated`]);
+          } else if (payload.type === "sentence") {
+            // Push words of this sentence into the reveal queue
+            const words = String(payload.translated).split(/\s+/).filter(Boolean);
+            wordQueue.push(...words);
+            translatedSentences.push(payload.translated);
+            // Start reveal if not already running
+            startReveal();
+          } else if (payload.type === "done") {
+            setRunning(false);
+            setLogs((l) => [...l, `Response complete`]);
+            // Stop reveal timer when stream finishes
+            if (revealTimer !== null) {
+              window.clearInterval(revealTimer);
+              revealTimer = null;
+            }
+          } else if (payload.type === "error") {
+            setRunning(false);
+            setLogs((l) => [...l, `Backend error: ${payload.message}`]);
+            if (revealTimer !== null) {
+              window.clearInterval(revealTimer);
+              revealTimer = null;
+            }
+          }
+        } catch (e) {
+          console.error("Failed to parse event:", eventData, e);
+          setLogs((l) => [...l, `Parse error: ${String(e)}`]);
+        }
+      };
+
+      // Read the stream loop
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunkText = decoder.decode(value, { stream: true });
+        console.log("[chunk]", chunkText);
+        buffer += chunkText;
+
+        const events = buffer.split("\n\n");
+        for (let i = 0; i < events.length - 1; i++) {
+          const event = events[i].trim();
+          if (event.startsWith("data: ")) {
+            const eventData = event.slice(6);
+            processEvent(eventData);
+          } else {
+            console.log("[SSE unknown event format]", event);
+          }
+        }
+        buffer = events[events.length - 1];
+      }
+
+      // Flush remaining buffer
+      if (buffer.trim().startsWith("data: ")) {
+        processEvent(buffer.trim().slice(6));
+      }
+      setRunning(false);
+      if (revealTimer !== null) {
+        window.clearInterval(revealTimer);
+        revealTimer = null;
+      }
+    } catch (err: any) {
+      const msg = err?.name === "AbortError" ? `Request aborted: ${String(err?.message)}` : String(err);
+      console.error("[stream error]", err);
+      setLogs((l) => [...l, `Stream error: ${msg}`]);
+      setRunning(false);
+      // Ensure timer cleanup on errors
+      // revealTimer may remain set if error occurs mid-stream
+      // so clear it defensively
+      // (no-op if already null)
+      //
+      if (revealTimer !== null) {
+        window.clearInterval(revealTimer);
+        revealTimer = null;
+      }
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
@@ -117,56 +244,44 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 p-6">
-      <div className="max-w-6xl mx-auto grid grid-cols-12 gap-6">
-        {/* Left panel: Models + Controls */}
-        <aside className="col-span-3 p-4 bg-white dark:bg-slate-800 rounded-lg shadow">
-          <h2 className="text-lg font-semibold mb-3">Models</h2>
-          <ModelList
-            models={models}
-            selected={selectedModel}
-            onRefresh={refreshModels}
-            onLoad={loadModel}
-          />
-          <div className="mt-4">
-            <Controls
-              running={running}
-              onStart={startModel}
-              onStop={stopModel}
-              language={language}
-              setLanguage={setLanguage}
-            />
-          </div>
-
-          <div className="mt-4">
+      <div className="max-w-6xl mx-auto">
+        {/* Tabs */}
+        <div className="mb-4 flex gap-2">
+          {(["Pipeline","Translator","LLM","RAG"] as const).map((tab) => (
             <button
-              className="text-sm px-3 py-2 bg-gray-200 dark:bg-slate-700 rounded"
-              onClick={mockPopulateMessages}
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`px-3 py-2 rounded border ${activeTab === tab ? "bg-indigo-600 text-white border-indigo-600" : "bg-white dark:bg-slate-800"}`}
             >
-              Seed demo conversation
+              {tab}
             </button>
-          </div>
+          ))}
+        </div>
 
-          <div className="mt-4 text-xs text-gray-500 dark:text-gray-400">
-            <div>Logs:</div>
-            <div className="h-40 overflow-y-auto bg-slate-50 dark:bg-slate-900 p-2 rounded border">
-              {logs.map((l, i) => (
-                <div key={i} className="font-mono text-[12px]">
-                  {l}
-                </div>
-              ))}
-            </div>
-          </div>
-        </aside>
+        {activeTab === "Pipeline" && (
+          <PipelinePage
+            models={models}
+            selectedModel={selectedModel}
+            loadedModel={loadedModel}
+            running={running}
+            messages={messages}
+            logs={logs}
+            language={language}
+            onRefreshModels={refreshModels}
+            onLoadModel={loadModel}
+            onUnloadModel={unloadModel}
+            onStartModel={startModel}
+            onStopModel={stopModel}
+            onSendMessage={sendUserMessage}
+            setLanguage={setLanguage}
+          />
+        )}
 
-        {/* Main chat area */}
-        <main className="col-span-9 p-4 bg-white dark:bg-slate-800 rounded-lg shadow">
-          <div className="flex items-center justify-between mb-4">
-            <h1 className="text-2xl font-bold"> Edge Multilingual Assistant</h1>
-            <div className="text-sm text-gray-500 dark:text-gray-400">Model: {selectedModel ?? "—"}</div>
-          </div>
+        {activeTab === "Translator" && <TranslatorPage />}
 
-          <ChatView messages={messages} onSend={sendUserMessage} />
-        </main>
+        {activeTab === "LLM" && <LLMPage />}
+
+        {activeTab === "RAG" && <RAGPage />}
       </div>
     </div>
   );

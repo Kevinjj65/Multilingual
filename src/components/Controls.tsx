@@ -2,15 +2,13 @@
 import React from "react";
 
 export default function Controls({
-  running,
-  onStart,
-  onStop,
+  loadedModel,
+  onUnload,
   language,
   setLanguage,
 }: {
-  running: boolean;
-  onStart: () => void;
-  onStop: () => void;
+  loadedModel: string | null;
+  onUnload: () => void;
   language: string;
   setLanguage: (s: string) => void;
 }) {
@@ -18,18 +16,11 @@ export default function Controls({
     <div className="space-y-2">
       <div className="flex gap-2">
         <button
-          onClick={onStart}
-          className={`flex-1 px-3 py-2 rounded ${running ? "bg-gray-300" : "bg-indigo-600 text-white"}`}
-          disabled={running}
+          onClick={onUnload}
+          disabled={!loadedModel}
+          className={`w-full px-3 py-2 rounded ${loadedModel ? "bg-red-600 text-white" : "bg-gray-300"}`}
         >
-          Start Model
-        </button>
-        <button
-          onClick={onStop}
-          className={`px-3 py-2 rounded ${running ? "bg-red-600 text-white" : "bg-gray-200"}`}
-          disabled={!running}
-        >
-          Stop
+          Unload
         </button>
       </div>
 
