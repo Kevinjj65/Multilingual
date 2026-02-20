@@ -171,7 +171,7 @@ export default function TranslatorPage() {
   }
 
   return (
-    <div className="grid grid-cols-12 gap-4 p-4 bg-gray-100 dark:bg-slate-900 min-h-screen">
+<div className="grid grid-cols-12 gap-4 p-4 bg-slate-900 min-h-screen text-white">
       <aside className="col-span-4 p-4 bg-white dark:bg-slate-800 rounded-lg shadow overflow-y-auto max-h-screen">
         <h1 className="text-xl font-semibold mb-3">Translator</h1>
         <textarea
@@ -246,7 +246,7 @@ export default function TranslatorPage() {
             <h2 className="text-lg font-semibold mb-3">Translation Metrics</h2>
             <div className="grid grid-cols-2 gap-4">
               {/* Input Section */}
-              <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+            <div className="p-4 bg-slate-800 border border-slate-700 rounded-lg text-white">
                 <h3 className="font-semibold text-blue-800 dark:text-blue-300 mb-2">Input</h3>
                 <div className="text-sm space-y-1">
                   <div><span className="font-medium">Language:</span> {metrics.input.src_lang} → {metrics.input.tgt_lang}</div>

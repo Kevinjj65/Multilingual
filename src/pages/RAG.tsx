@@ -61,11 +61,31 @@ export default function RAGPage() {
   const [topK, setTopK] = useState<number>(3);
   const [similarity, setSimilarity] = useState<number>(0.35);
   const [searching, setSearching] = useState(false);
-  const [searchResults, setSearchResults] = useState<string[]>([]);
   const [metrics, setMetrics] = useState<RagMetrics | null>(null);
   const [isBenchmarking, setIsBenchmarking] = useState(false);
   const [benchmarkLlm, setBenchmarkLlm] = useState("llama");
   const [showLlmOption, setShowLlmOption] = useState(false);
+  const [selectedPdf, setSelectedPdf] = useState<File | null>(null);
+  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+
+
+  type RetrievalResult = {
+  text: string;
+  source: string;
+};
+
+const [searchResults, setSearchResults] = useState<RetrievalResult[]>([]);
+
+
+
+  // ✅ NEW: RAG backend dropdown
+  const [ragBackends, setRagBackends] = useState<string[]>([]);
+  const [activeBackend, setActiveBackend] = useState<string>("faiss");
+  const [switchingBackend, setSwitchingBackend] = useState(false);
+
+  // ✅ NEW: PDF ingest
+  const [pdfPath, setPdfPath] = useState("");
+  const [pdfIngesting, setPdfIngesting] = useState(false);
 
   async function loadRag() {
     try {
@@ -85,6 +105,7 @@ export default function RAGPage() {
     try {
       await axiosInstance.post("/rag/clear");
       setDocs([]);
+      setSearchResults([]);
       setLogs((l) => [...l, "Cleared RAG documents"]);
     } catch (e: any) {
       setLogs((l) => [...l, `Failed to clear RAG: ${String(e?.message || e)}`]);
@@ -123,6 +144,34 @@ export default function RAGPage() {
       setSearching(false);
     }
   }
+  async function ingestPdfUpload() {
+  if (!selectedPdf) return;
+
+  try {
+    setPdfIngesting(true);
+    setLogs((l) => [...l, `Uploading PDF → ${selectedPdf.name}`]);
+
+    const form = new FormData();
+    form.append("file", selectedPdf);
+
+    const res = await axiosInstance.post("/rag/pdf/upload", form, {
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: 180_000,
+    });
+
+    setLogs((l) => [
+      ...l,
+      `PDF ingested ✅ chunks_added=${res.data?.result?.chunks_added ?? 0}`,
+    ]);
+
+    setSelectedPdf(null);
+    await loadRag();
+  } catch (e: any) {
+    setLogs((l) => [...l, `PDF ingest failed: ${String(e?.response?.data?.error || e?.message || e)}`]);
+  } finally {
+    setPdfIngesting(false);
+  }
+}
 
   async function benchmarkRag(withLlm: boolean) {
     setIsBenchmarking(true);
@@ -132,11 +181,7 @@ export default function RAGPage() {
 
     try {
       const body = withLlm ? { llm_name: benchmarkLlm } : {};
-      const res = await axiosInstance.post<RagMetrics>(
-        "/rag_metrics",
-        body,
-        { timeout: 120_000 }
-      );
+      const res = await axiosInstance.post<RagMetrics>("/rag_metrics", body, { timeout: 120_000 });
       setMetrics(res.data);
       setLogs((l) => [...l, `Benchmark completed successfully!`]);
     } catch (err: any) {
@@ -147,14 +192,77 @@ export default function RAGPage() {
     }
   }
 
+  // ✅ NEW: backend list + active backend
+  async function fetchRagBackends() {
+    try {
+      const res = await axiosInstance.get("/rag/backends");
+      setRagBackends(res.data?.available ?? []);
+      setActiveBackend(res.data?.active ?? "faiss");
+      setLogs((l) => [...l, `RAG backend active: ${res.data?.active ?? "unknown"}`]);
+    } catch (e: any) {
+      setLogs((l) => [...l, `Failed to fetch RAG backends: ${String(e?.message || e)}`]);
+    }
+  }
+
+  async function switchRagBackend(name: string) {
+    try {
+      setSwitchingBackend(true);
+      setLogs((l) => [...l, `Switching backend → ${name}...`]);
+
+      const res = await axiosInstance.post("/rag/backend/load", { name });
+      const active = res.data?.active ?? name;
+
+      setActiveBackend(active);
+      setLogs((l) => [...l, `Switched backend ✅ active=${active}`]);
+
+      // Optional: refresh docs after switch
+      await loadRag();
+    } catch (e: any) {
+      setLogs((l) => [...l, `Failed to switch backend: ${String(e?.response?.data?.error || e?.message || e)}`]);
+    } finally {
+      setSwitchingBackend(false);
+    }
+  }
+
+  // ✅ NEW: PDF ingest
+  async function ingestPdf() {
+    const path = pdfPath.trim();
+    if (!path) return;
+
+    try {
+      setPdfIngesting(true);
+      setLogs((l) => [...l, `Ingesting PDF → ${path}`]);
+
+      const res = await axiosInstance.post(
+        "/rag/pdf/add",
+        { pdf_path: path },
+        { timeout: 120_000 }
+      );
+
+      setLogs((l) => [
+        ...l,
+        `PDF ingested ✅ pdf_id=${res.data?.pdf_id ?? "—"} chunks_added=${res.data?.chunks_added ?? 0}`,
+      ]);
+
+      setPdfPath("");
+      await loadRag();
+    } catch (e: any) {
+      setLogs((l) => [...l, `PDF ingest failed: ${String(e?.response?.data?.error || e?.message || e)}`]);
+    } finally {
+      setPdfIngesting(false);
+    }
+  }
+
   useEffect(() => {
     loadRag();
+    fetchRagBackends();
   }, []);
 
   return (
     <div className="grid grid-cols-12 gap-6">
       <aside className="col-span-4 p-4 bg-white dark:bg-slate-800 rounded-lg shadow">
         <h1 className="text-2xl font-bold mb-3">RAG</h1>
+
         <button
           onClick={loadRag}
           disabled={loading}
@@ -162,12 +270,69 @@ export default function RAGPage() {
         >
           {loading ? "Loading..." : "Refresh RAG"}
         </button>
+
         <button
           onClick={clearRag}
           className="w-full px-3 py-2 rounded bg-red-600 text-white"
         >
           Clear RAG
         </button>
+
+        {/* ✅ NEW: Backend dropdown */}
+        <div className="mt-4">
+          <h3 className="text-md font-semibold mb-2">RAG Backend</h3>
+
+          <select
+            value={activeBackend}
+            disabled={switchingBackend}
+            onChange={(e) => switchRagBackend(e.target.value)}
+            className="w-full px-3 py-2 rounded border bg-white dark:bg-slate-700"
+          >
+            {ragBackends.length === 0 && (
+              <option value={activeBackend}>{activeBackend.toUpperCase()}</option>
+            )}
+            {ragBackends.map((b) => (
+              <option key={b} value={b}>
+                {b.toUpperCase()}
+              </option>
+            ))}
+          </select>
+
+          <div className="text-xs text-gray-500 mt-2">
+            Active: <span className="font-mono">{activeBackend}</span>
+          </div>
+        </div>
+
+        {/* ✅ NEW: PDF Ingest */}
+        <div className="mt-4">
+  <h3 className="text-md font-semibold mb-2">Ingest PDF into RAG</h3>
+
+  <input
+    type="file"
+    accept="application/pdf"
+    onChange={(e) => {
+      const file = e.target.files?.[0] ?? null;
+      setSelectedPdf(file);
+    }}
+    className="w-full text-sm"
+  />
+
+  <button
+    onClick={ingestPdfUpload}
+    disabled={!selectedPdf || pdfIngesting}
+    className={`mt-3 w-full px-3 py-2 rounded ${
+      pdfIngesting ? "bg-gray-300" : "bg-cyan-600 text-white"
+    }`}
+  >
+    {pdfIngesting ? "Ingesting..." : "Ingest PDF"}
+  </button>
+
+  {selectedPdf && (
+    <div className="mt-2 text-xs text-gray-500">
+      Selected: <span className="font-mono">{selectedPdf.name}</span>
+    </div>
+  )}
+</div>
 
         <div className="mt-4">
           <h3 className="text-md font-semibold mb-2">Search RAG</h3>
@@ -253,6 +418,11 @@ export default function RAGPage() {
           )}
         </div>
 
+        {/* optional metric widget if you want it visible here */}
+        <div className="mt-4">
+          <SystemMetrics />
+        </div>
+
         <div className="mt-4 text-xs text-gray-500 dark:text-gray-400">
           <div>Logs:</div>
           <div className="h-40 overflow-y-auto bg-slate-50 dark:bg-slate-900 p-2 rounded border">
@@ -297,9 +467,25 @@ export default function RAGPage() {
             <div className="mt-6">
               <h3 className="text-md font-semibold mb-2">Search Results ({searchResults.length})</h3>
               <div className="space-y-2">
-                {searchResults.map((r, idx) => (
-                  <div key={idx} className="p-2 rounded border bg-slate-50 dark:bg-slate-900">{r}</div>
-                ))}
+                {searchResults.map((r: any, idx) => (
+  <div key={idx} className="border rounded">
+    <button
+      onClick={() =>
+        setExpandedIndex(expandedIndex === idx ? null : idx)
+      }
+      className="w-full text-left px-3 py-2 bg-slate-200 dark:bg-slate-700"
+    >
+      {r.source} — Result {idx + 1}
+    </button>
+
+    {expandedIndex === idx && (
+      <div className="p-3 bg-white dark:bg-slate-900 text-sm whitespace-pre-wrap">
+        {r.text}
+      </div>
+    )}
+  </div>
+))}
+
               </div>
             </div>
           )}
@@ -331,7 +517,13 @@ export default function RAGPage() {
                   <div className="mt-2 w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
                     <div
                       className="bg-green-600 h-2.5 rounded-full"
-                      style={{ width: `${metrics.restoration.restored_doc_count > 0 ? (metrics.restoration.restored_doc_count / metrics.restoration.original_doc_count * 100) : 0}%` }}
+                      style={{
+                        width: `${
+                          metrics.restoration.original_doc_count > 0
+                            ? (metrics.restoration.restored_doc_count / metrics.restoration.original_doc_count) * 100
+                            : 0
+                        }%`
+                      }}
                     ></div>
                   </div>
                 </div>

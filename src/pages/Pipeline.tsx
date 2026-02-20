@@ -13,6 +13,7 @@ type Props = {
   messages: Message[];
   logs: string[];
   language: string;
+  pipelineMetrics: any | null;
   onRefreshModels: () => Promise<void> | void;
   onLoadModel: (id: string) => Promise<void> | void;
   onUnloadModel: () => Promise<void> | void;
@@ -30,6 +31,7 @@ export default function PipelinePage({
   messages,
   logs,
   language,
+  pipelineMetrics,
   onRefreshModels,
   onLoadModel,
   onUnloadModel,
@@ -39,36 +41,125 @@ export default function PipelinePage({
   setLanguage,
 }: Props) {
   return (
-    <div className="grid grid-cols-12 gap-6">
-      <aside className="col-span-3 p-4 bg-white dark:bg-slate-800 rounded-lg shadow">
-        <h2 className="text-lg font-semibold mb-3">Models</h2>
-        <ModelList models={models} selected={selectedModel} loadedModel={loadedModel} onRefresh={onRefreshModels} onLoad={onLoadModel} />
-        <div className="mt-4">
-          <Controls loadedModel={loadedModel} onUnload={onUnloadModel} language={language} setLanguage={setLanguage} />
+    <div className="grid grid-cols-12 gap-6 text-white">
+
+      {/* LEFT PANEL */}
+      <aside className="col-span-3 p-4 bg-slate-900 rounded-xl shadow-lg">
+
+        <h2 className="text-lg font-semibold mb-4 text-white">
+          Models
+        </h2>
+
+        <ModelList
+          models={models}
+          selected={selectedModel}
+          loadedModel={loadedModel}
+          onRefresh={onRefreshModels}
+          onLoad={onLoadModel}
+        />
+
+        <div className="mt-6">
+          <Controls
+            loadedModel={loadedModel}
+            onUnload={onUnloadModel}
+            language={language}
+            setLanguage={setLanguage}
+          />
         </div>
 
-        <div className="mt-4">
+        {/* SYSTEM METRICS */}
+        <div className="mt-6">
           <SystemMetrics />
         </div>
 
-        <div className="mt-4 text-xs text-gray-500 dark:text-gray-400">
-          <div>Logs:</div>
-          <div className="h-40 overflow-y-auto bg-slate-50 dark:bg-slate-900 p-2 rounded border">
+        {/* PIPELINE METRICS */}
+        {pipelineMetrics && (
+          <div className="mt-6 text-sm bg-slate-800 p-4 rounded-lg border border-slate-700">
+            <div className="font-semibold mb-3 text-indigo-400">
+              Pipeline Metrics
+            </div>
+
+            {"cache_hit" in pipelineMetrics && (
+              <div>Cache Hit: {pipelineMetrics.cache_hit ? "Yes" : "No"}</div>
+            )}
+
+            {typeof pipelineMetrics.cache_similarity === "number" && (
+              <div>
+                Cache Similarity: {pipelineMetrics.cache_similarity.toFixed(3)}
+              </div>
+            )}
+
+            {typeof pipelineMetrics.embedding_time_sec === "number" && (
+              <div>
+                Embedding: {pipelineMetrics.embedding_time_sec.toFixed(3)}s
+              </div>
+            )}
+
+            {typeof pipelineMetrics.rag_time_sec === "number" && (
+              <div>
+                RAG: {pipelineMetrics.rag_time_sec.toFixed(3)}s
+              </div>
+            )}
+
+            {typeof pipelineMetrics.translation_in_time_sec === "number" && (
+              <div>
+                Translate In: {pipelineMetrics.translation_in_time_sec.toFixed(3)}s
+              </div>
+            )}
+
+            {typeof pipelineMetrics.translation_out_time_sec === "number" && (
+              <div>
+                Translate Out: {pipelineMetrics.translation_out_time_sec.toFixed(3)}s
+              </div>
+            )}
+
+            {typeof pipelineMetrics.llm_time_sec === "number" && (
+              <div>
+                LLM: {pipelineMetrics.llm_time_sec.toFixed(3)}s
+              </div>
+            )}
+
+            {typeof pipelineMetrics.total_time_sec === "number" && (
+              <div className="font-bold mt-2 text-indigo-300">
+                Total: {pipelineMetrics.total_time_sec.toFixed(3)}s
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* LOGS */}
+        <div className="mt-6 text-sm">
+          <div className="mb-2 font-semibold text-indigo-400">Logs</div>
+
+          <div className="h-40 overflow-y-auto bg-slate-800 p-3 rounded-lg border border-slate-700">
             {logs.map((l, i) => (
-              <div key={i} className="font-mono text-[12px]">{l}</div>
+              <div key={i} className="font-mono text-xs text-white">
+                {l}
+              </div>
             ))}
           </div>
         </div>
       </aside>
 
-      <main className="col-span-9 p-4 bg-white dark:bg-slate-800 rounded-lg shadow">
-        <div className="flex items-center justify-between mb-4">
-          <h1 className="text-2xl font-bold">Edge Multilingual Assistant</h1>
-          <div className="text-sm text-gray-500 dark:text-gray-400">Model: {selectedModel ?? "—"}</div>
+      {/* RIGHT PANEL */}
+      <main className="col-span-9 p-6 bg-slate-900 rounded-xl shadow-lg text-white">
+
+        <div className="flex items-center justify-between mb-6">
+          <h1 className="text-2xl font-bold text-indigo-400">
+            Edge Multilingual Assistant
+          </h1>
+
+          <div className="text-sm text-white">
+            Model: {selectedModel ?? "—"}
+          </div>
         </div>
 
-        <ChatView messages={messages} onSend={onSendMessage} language={language} />
+        <ChatView
+          messages={messages}
+          onSend={onSendMessage}
+          language={language}
+        />
       </main>
     </div>
   );
-} 
+}
