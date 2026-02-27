@@ -7,6 +7,7 @@ import type { Message } from "../App";
 
 type Props = {
   models: string[];
+  translatorModels: string[];
   selectedModel: string | null;
   loadedModel: string | null;
   running: boolean;
@@ -15,6 +16,7 @@ type Props = {
   language: string;
   pipelineMetrics: any | null;
   onRefreshModels: () => Promise<void> | void;
+  onRefreshTranslatorModels: () => Promise<void> | void;
   onLoadModel: (id: string) => Promise<void> | void;
   onUnloadModel: () => Promise<void> | void;
   onStartModel: () => Promise<void> | void;
@@ -25,6 +27,7 @@ type Props = {
 
 export default function PipelinePage({
   models,
+  translatorModels,
   selectedModel,
   loadedModel,
   running,
@@ -33,6 +36,7 @@ export default function PipelinePage({
   language,
   pipelineMetrics,
   onRefreshModels,
+  onRefreshTranslatorModels,
   onLoadModel,
   onUnloadModel,
   onStartModel,
@@ -57,6 +61,32 @@ export default function PipelinePage({
           onRefresh={onRefreshModels}
           onLoad={onLoadModel}
         />
+
+        <div className="mt-6">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-sm font-medium">Translation Models</div>
+            <button
+              onClick={onRefreshTranslatorModels}
+              className="text-xs px-2 py-1 bg-indigo-100 rounded"
+            >
+              Refresh
+            </button>
+          </div>
+
+          <div className="space-y-2">
+            {translatorModels.length === 0 && (
+              <div className="text-sm text-gray-500">
+                No models found — drop translator models in <code>./models/translators</code>
+              </div>
+            )}
+
+            {translatorModels.map((m) => (
+              <div key={m} className="p-2 border rounded">
+                <div className="truncate">{m}</div>
+              </div>
+            ))}
+          </div>
+        </div>
 
         <div className="mt-6">
           <Controls

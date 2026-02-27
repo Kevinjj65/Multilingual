@@ -14,6 +14,7 @@ export type Message = {
 
 export default function App() {
   const [models, setModels] = useState<string[]>([]);
+  const [translatorModels, setTranslatorModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [loadedModel, setLoadedModel] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
@@ -28,6 +29,7 @@ export default function App() {
   useEffect(() => {
     fetchCurrentLlm();
     refreshModels();
+    refreshTranslatorModels();
   }, []);
 
   async function fetchCurrentLlm() {
@@ -51,6 +53,35 @@ export default function App() {
       setLogs((l) => [...l, `Found ${m.length} model(s)`]);
     } catch (err) {
       setLogs((l) => [...l, `list_models error: ${String(err)}`]);
+    }
+  }
+
+  async function refreshTranslatorModels() {
+    try {
+      const res = await axiosInstance.get("/translator_status");
+      const status = res.data || {};
+      const available: string[] = [];
+
+      if (status?.nllb?.available && status?.nllb?.model) {
+        available.push(`NLLB: ${status.nllb.model}`);
+      }
+
+      if (status?.onnx?.available) {
+        const activeModels = status?.onnx?.active_models;
+        if (activeModels?.encoder) available.push(`ONNX Encoder: ${activeModels.encoder}`);
+        if (activeModels?.decoder) available.push(`ONNX Decoder: ${activeModels.decoder}`);
+        if (activeModels?.lm_head) available.push(`ONNX LM Head: ${activeModels.lm_head}`);
+
+        if (!activeModels?.encoder && !activeModels?.decoder && !activeModels?.lm_head) {
+          available.push("ONNX Translator");
+        }
+      }
+
+      setTranslatorModels(available);
+      setLogs((l) => [...l, `Found ${available.length} translator model(s)`]);
+    } catch (err) {
+      setTranslatorModels([]);
+      setLogs((l) => [...l, `translator_status error: ${String(err)}`]);
     }
   }
 
@@ -261,6 +292,7 @@ export default function App() {
         {activeTab === "Pipeline" && (
           <PipelinePage
             models={models}
+            translatorModels={translatorModels}
             selectedModel={selectedModel}
             loadedModel={loadedModel}
             running={running}
@@ -268,6 +300,7 @@ export default function App() {
             logs={logs}
             language={language}
             onRefreshModels={refreshModels}
+            onRefreshTranslatorModels={refreshTranslatorModels}
             onLoadModel={loadModel}
             onUnloadModel={unloadModel}
             onStartModel={() => {}}
