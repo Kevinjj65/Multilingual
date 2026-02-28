@@ -7,7 +7,12 @@ import type { Message } from "../App";
 
 type Props = {
   models: string[];
-  translatorModels: string[];
+  translatorModels: Array<{
+    id: "onnx" | "nllb";
+    label: string;
+    available: boolean;
+    loaded: boolean;
+  }>;
   selectedModel: string | null;
   loadedModel: string | null;
   running: boolean;
@@ -17,6 +22,7 @@ type Props = {
   pipelineMetrics: any | null;
   onRefreshModels: () => Promise<void> | void;
   onRefreshTranslatorModels: () => Promise<void> | void;
+  onLoadTranslatorModel: (id: "onnx" | "nllb") => Promise<void> | void;
   onLoadModel: (id: string) => Promise<void> | void;
   onUnloadModel: () => Promise<void> | void;
   onStartModel: () => Promise<void> | void;
@@ -37,6 +43,7 @@ export default function PipelinePage({
   pipelineMetrics,
   onRefreshModels,
   onRefreshTranslatorModels,
+  onLoadTranslatorModel,
   onLoadModel,
   onUnloadModel,
   onStartModel,
@@ -76,13 +83,26 @@ export default function PipelinePage({
           <div className="space-y-2">
             {translatorModels.length === 0 && (
               <div className="text-sm text-gray-500">
-                No models found — drop translator models in <code>./models/translators</code>
+                No translator backends found.
               </div>
             )}
 
             {translatorModels.map((m) => (
-              <div key={m} className="p-2 border rounded">
-                <div className="truncate">{m}</div>
+              <div key={m.id} className={`p-2 rounded border flex justify-between items-center ${m.loaded ? "ring-2 ring-indigo-400" : ""}`}>
+                <div className="truncate">{m.label}</div>
+                {m.loaded ? (
+                  <span className="text-xs px-2 py-1 bg-green-100 text-green-800 rounded">
+                    Loaded
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => onLoadTranslatorModel(m.id)}
+                    disabled={!m.available}
+                    className="text-xs px-2 py-1 bg-green-600 text-white rounded disabled:opacity-50"
+                  >
+                    Load
+                  </button>
+                )}
               </div>
             ))}
           </div>

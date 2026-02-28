@@ -63,6 +63,12 @@ interface TranslatorStatus {
       decoder: boolean;
       lm_head: boolean;
     };
+    asset_checks?: {
+      encoder?: { valid: boolean; reason: string; size_bytes: number };
+      decoder?: { valid: boolean; reason: string; size_bytes: number };
+      lm_head?: { valid: boolean; reason: string; size_bytes: number };
+    };
+    issues?: string[];
     active_models?: {
       encoder: string;
       decoder: string;
@@ -75,6 +81,27 @@ interface TranslatorStatus {
     model: string;
   };
 }
+
+interface OnnxCatalogFile {
+  id: string;
+  name: string;
+  view_url: string;
+}
+
+interface OnnxCatalogResponse {
+  ok: boolean;
+  folder_url: string;
+  folder_id: string;
+  default_files: string[];
+  files: OnnxCatalogFile[];
+  error?: string;
+}
+
+const FALLBACK_DEFAULT_ONNX_FILES = [
+  "m2m100_encoder_w8a32_SAFE.onnx",
+  "m2m100_decoder_w8a32.onnx",
+  "m2m100_lm_head.onnx",
+];
 
 export default function TranslatorPage() {
   const [input, setInput] = useState("");
@@ -89,6 +116,10 @@ export default function TranslatorPage() {
   const [isTogglingBackend, setIsTogglingBackend] = useState(false);
   const [isPreloading, setIsPreloading] = useState(false);
   const [lastBackendUsed, setLastBackendUsed] = useState<string | null>(null);
+  const [onnxCatalog, setOnnxCatalog] = useState<OnnxCatalogResponse | null>(null);
+  const [isFetchingOnnxCatalog, setIsFetchingOnnxCatalog] = useState(false);
+  const [isDownloadingOnnx, setIsDownloadingOnnx] = useState(false);
+  const [selectedOnnxFiles, setSelectedOnnxFiles] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -107,9 +138,96 @@ export default function TranslatorPage() {
       setTranslatorStatus(res.data);
       setSelectedBackend(res.data.active_translator);
       setLogs((l) => [...l, `Translator status: ${res.data.active_translator.toUpperCase()}`]);
+      if (!res.data.onnx.available) {
+        fetchOnnxCatalog(false);
+      }
     } catch (err: any) {
       console.error("Translator status error:", err);
       setLogs((l) => [...l, `Status error: ${err?.message}`]);
+    }
+  }
+
+  async function getFirstSuccessfulCatalog(refresh: boolean): Promise<OnnxCatalogResponse> {
+    const suffix = refresh ? "?refresh=true" : "";
+    const candidates = [`/onnx_models/catalog${suffix}`, `/api/onnx_models/catalog${suffix}`];
+    let lastErr: any = null;
+    for (const path of candidates) {
+      try {
+        const res = await axiosInstance.get<OnnxCatalogResponse>(path);
+        return res.data;
+      } catch (err: any) {
+        lastErr = err;
+      }
+    }
+    throw lastErr;
+  }
+
+  async function postFirstSuccessfulDownload(files: string[]) {
+    const candidates = ["/onnx_models/download", "/api/onnx_models/download"];
+    let lastErr: any = null;
+    for (const path of candidates) {
+      try {
+        return await axiosInstance.post(path, { files }, { timeout: 0 });
+      } catch (err: any) {
+        lastErr = err;
+      }
+    }
+    throw lastErr;
+  }
+
+  async function fetchOnnxCatalog(refresh: boolean) {
+    if (isFetchingOnnxCatalog) return;
+    setIsFetchingOnnxCatalog(true);
+    try {
+      const catalog = await getFirstSuccessfulCatalog(refresh);
+      setOnnxCatalog(catalog);
+      if (catalog.default_files?.length) {
+        setSelectedOnnxFiles(catalog.default_files);
+      } else {
+        setSelectedOnnxFiles(FALLBACK_DEFAULT_ONNX_FILES);
+      }
+      setLogs((l) => [...l, `ONNX catalog loaded (${catalog.files?.length || 0} files)`]);
+    } catch (err: any) {
+      console.error("ONNX catalog error:", err);
+      setSelectedOnnxFiles(FALLBACK_DEFAULT_ONNX_FILES);
+      setLogs((l) => [...l, `Catalog error: ${err?.response?.data?.error || err.message}`]);
+      setLogs((l) => [...l, "Using default ONNX file set for download"]) ;
+    } finally {
+      setIsFetchingOnnxCatalog(false);
+    }
+  }
+
+  function toggleOnnxFileSelection(fileName: string) {
+    setSelectedOnnxFiles((prev) => (
+      prev.includes(fileName) ? prev.filter((name) => name !== fileName) : [...prev, fileName]
+    ));
+  }
+
+  async function downloadOnnxModels(useDefaults: boolean) {
+    if (isDownloadingOnnx) return;
+    const files = useDefaults
+      ? (onnxCatalog?.default_files?.length ? onnxCatalog.default_files : FALLBACK_DEFAULT_ONNX_FILES)
+      : selectedOnnxFiles;
+    if (!files.length) {
+      setLogs((l) => [...l, "Select at least one ONNX file to download"]);
+      return;
+    }
+
+    setIsDownloadingOnnx(true);
+    setLogs((l) => [...l, `Downloading ${files.length} ONNX file(s)...`]);
+    try {
+      const res = await postFirstSuccessfulDownload(files);
+      const downloaded = res?.data?.downloaded?.length || 0;
+      setLogs((l) => [...l, `Downloaded ${downloaded} ONNX file(s)`]);
+      await fetchTranslatorStatus();
+    } catch (err: any) {
+      console.error("ONNX download error:", err);
+      setLogs((l) => [...l, `Download error: ${err?.response?.data?.error || err.message}`]);
+      if (err?.response?.status === 404) {
+        setLogs((l) => [...l, "Backend route not found. Restart backend from mainproj/server.py and retry."]);
+      }
+    } finally {
+      setIsDownloadingOnnx(false);
     }
   }
 
@@ -146,7 +264,11 @@ export default function TranslatorPage() {
     setLogs((l) => [...l, `Preloading ${selectedBackend.toUpperCase()} translator...`]);
 
     try {
-      await axiosInstance.post("/translator_preload", { use_onnx: selectedBackend === "onnx" });
+      await axiosInstance.post(
+        "/translator_preload",
+        { use_onnx: selectedBackend === "onnx" },
+        { timeout: 0 }
+      );
       setLogs((l) => [...l, `${selectedBackend.toUpperCase()} preload complete`]);
       await fetchTranslatorStatus();
     } catch (err: any) {
@@ -343,6 +465,20 @@ export default function TranslatorPage() {
               </div>
             </div>
 
+            {/* ONNX Asset Health */}
+            <div className={`mb-2 p-2 rounded text-xs ${translatorStatus.onnx.issues?.length ? "bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800" : "bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800"}`}>
+              <div className="font-medium mb-1">ONNX Asset Health</div>
+              {translatorStatus.onnx.issues?.length ? (
+                <div className="space-y-0.5 text-red-700 dark:text-red-300">
+                  {translatorStatus.onnx.issues.map((issue) => (
+                    <div key={issue}>• {issue}</div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-green-700 dark:text-green-300">All required ONNX assets look valid</div>
+              )}
+            </div>
+
             {/* Active Models */}
             {translatorStatus.onnx.active_models && (
               <div className="mb-2 p-2 bg-white dark:bg-slate-800 rounded text-xs">
@@ -384,6 +520,70 @@ export default function TranslatorPage() {
             {lastBackendUsed && (
               <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
                 Last used: <span className="font-semibold">{lastBackendUsed.toUpperCase()}</span>
+              </div>
+            )}
+
+            {!translatorStatus.onnx.available && (
+              <div className="mt-3 p-2 bg-white dark:bg-slate-800 rounded border border-blue-100 dark:border-blue-800">
+                <div className="text-xs font-semibold mb-2">ONNX models unavailable</div>
+                <div className="text-[11px] text-gray-600 dark:text-gray-400 mb-2">
+                  Download defaults (encoder w8a32 SAFE, decoder w8a32, lm_head) or pick other variants from Drive.
+                </div>
+
+                <div className="flex gap-2 mb-2">
+                  <button
+                    onClick={() => downloadOnnxModels(true)}
+                    disabled={isDownloadingOnnx || isFetchingOnnxCatalog}
+                    className="flex-1 px-2 py-1 rounded text-xs bg-indigo-600 text-white disabled:opacity-50"
+                  >
+                    {isDownloadingOnnx ? "Downloading..." : "Download Defaults"}
+                  </button>
+                  <button
+                    onClick={() => fetchOnnxCatalog(true)}
+                    disabled={isFetchingOnnxCatalog || isDownloadingOnnx}
+                    className="px-2 py-1 rounded text-xs bg-gray-200 dark:bg-gray-700"
+                  >
+                    {isFetchingOnnxCatalog ? "Refreshing..." : "Refresh List"}
+                  </button>
+                </div>
+
+                {onnxCatalog?.files?.length ? (
+                  <div className="max-h-32 overflow-y-auto border rounded p-2 bg-slate-50 dark:bg-slate-900 mb-2">
+                    {onnxCatalog.files.map((file) => (
+                      <label key={file.id} className="flex items-center gap-2 text-[11px] py-0.5">
+                        <input
+                          type="checkbox"
+                          checked={selectedOnnxFiles.includes(file.name)}
+                          onChange={() => toggleOnnxFileSelection(file.name)}
+                        />
+                        <span>{file.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-gray-500 mb-2">
+                    {isFetchingOnnxCatalog ? "Loading available variants..." : "No variants loaded yet"}
+                  </div>
+                )}
+
+                <button
+                  onClick={() => downloadOnnxModels(false)}
+                  disabled={isDownloadingOnnx || !selectedOnnxFiles.length}
+                  className="w-full px-2 py-1 rounded text-xs bg-blue-600 text-white disabled:opacity-50"
+                >
+                  Download Selected Variants
+                </button>
+
+                {onnxCatalog?.folder_url && (
+                  <a
+                    href={onnxCatalog.folder_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="block mt-2 text-[11px] text-blue-600 dark:text-blue-300 underline"
+                  >
+                    Open Drive Folder
+                  </a>
+                )}
               </div>
             )}
           </div>

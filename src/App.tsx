@@ -14,7 +14,12 @@ export type Message = {
 
 export default function App() {
   const [models, setModels] = useState<string[]>([]);
-  const [translatorModels, setTranslatorModels] = useState<string[]>([]);
+  const [translatorModels, setTranslatorModels] = useState<Array<{
+    id: "onnx" | "nllb";
+    label: string;
+    available: boolean;
+    loaded: boolean;
+  }>>([]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [loadedModel, setLoadedModel] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
@@ -60,28 +65,48 @@ export default function App() {
     try {
       const res = await axiosInstance.get("/translator_status");
       const status = res.data || {};
-      const available: string[] = [];
+      const active = status?.active_translator;
+      const onnxLabel = status?.onnx?.active_models
+        ? `ONNX: ${status.onnx.active_models.encoder}, ${status.onnx.active_models.decoder}, ${status.onnx.active_models.lm_head}`
+        : "ONNX Translator";
 
-      if (status?.nllb?.available && status?.nllb?.model) {
-        available.push(`NLLB: ${status.nllb.model}`);
-      }
+      const next = [
+        {
+          id: "onnx" as const,
+          label: onnxLabel,
+          available: !!status?.onnx?.available,
+          loaded: active === "onnx",
+        },
+        {
+          id: "nllb" as const,
+          label: `NLLB: ${status?.nllb?.model || "facebook/nllb-200-distilled-600M"}`,
+          available: !!status?.nllb?.available,
+          loaded: active === "nllb",
+        },
+      ];
 
-      if (status?.onnx?.available) {
-        const activeModels = status?.onnx?.active_models;
-        if (activeModels?.encoder) available.push(`ONNX Encoder: ${activeModels.encoder}`);
-        if (activeModels?.decoder) available.push(`ONNX Decoder: ${activeModels.decoder}`);
-        if (activeModels?.lm_head) available.push(`ONNX LM Head: ${activeModels.lm_head}`);
-
-        if (!activeModels?.encoder && !activeModels?.decoder && !activeModels?.lm_head) {
-          available.push("ONNX Translator");
-        }
-      }
-
-      setTranslatorModels(available);
-      setLogs((l) => [...l, `Found ${available.length} translator model(s)`]);
+      setTranslatorModels(next);
+      setLogs((l) => [...l, `Found ${next.length} translator backend(s)`]);
     } catch (err) {
       setTranslatorModels([]);
       setLogs((l) => [...l, `translator_status error: ${String(err)}`]);
+    }
+  }
+
+  async function loadTranslatorModel(backend: "onnx" | "nllb") {
+    try {
+      await axiosInstance.post("/toggle_translator", { use_onnx: backend === "onnx" });
+      await axiosInstance.post(
+        "/translator_preload",
+        { use_onnx: backend === "onnx" },
+        { timeout: 0 }
+      );
+      await refreshTranslatorModels();
+      setLogs((l) => [...l, `Loaded translator: ${backend.toUpperCase()}`]);
+    } catch (err: any) {
+      const msg = err?.response?.data?.error || String(err);
+      setLogs((l) => [...l, `load_translator error: ${msg}`]);
+      await refreshTranslatorModels();
     }
   }
 
@@ -117,7 +142,15 @@ export default function App() {
     setPipelineMetrics(null);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    const STREAM_IDLE_TIMEOUT_MS = 120_000;
+    let timeoutId: number | null = null;
+    const resetIdleTimeout = () => {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+      timeoutId = window.setTimeout(() => controller.abort("timeout"), STREAM_IDLE_TIMEOUT_MS);
+    };
+    resetIdleTimeout();
 
     let revealTimer: number | null = null;
     let wordQueue: string[] = [];
@@ -138,6 +171,10 @@ export default function App() {
         }),
         signal: controller.signal,
       });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      }
 
       if (!res.body) throw new Error("No response body");
 
@@ -244,6 +281,8 @@ export default function App() {
         const { done, value } = await reader.read();
         if (done) break;
 
+        resetIdleTimeout();
+
         buffer += decoder.decode(value, { stream: true });
         const events = buffer.split("\n\n");
 
@@ -262,10 +301,16 @@ export default function App() {
       }
 
     } catch (err: any) {
-      setLogs((l) => [...l, `Stream error: ${String(err)}`]);
+      const isAbort = err?.name === "AbortError";
+      const msg = isAbort
+        ? `Stream timed out after ${STREAM_IDLE_TIMEOUT_MS / 1000}s of inactivity`
+        : String(err);
+      setLogs((l) => [...l, `Stream error: ${msg}`]);
       setRunning(false);
     } finally {
-      clearTimeout(timeoutId);
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
     }
   }
 
@@ -301,6 +346,7 @@ export default function App() {
             language={language}
             onRefreshModels={refreshModels}
             onRefreshTranslatorModels={refreshTranslatorModels}
+            onLoadTranslatorModel={loadTranslatorModel}
             onLoadModel={loadModel}
             onUnloadModel={unloadModel}
             onStartModel={() => {}}
