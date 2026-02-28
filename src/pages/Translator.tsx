@@ -75,6 +75,8 @@ interface TranslatorStatus {
       lm_head: string;
     };
     tokenizer_available: boolean;
+    tokenizer_ready?: boolean;
+    tokenizer_dir?: string;
   };
   nllb: {
     available: boolean;
@@ -119,6 +121,7 @@ export default function TranslatorPage() {
   const [onnxCatalog, setOnnxCatalog] = useState<OnnxCatalogResponse | null>(null);
   const [isFetchingOnnxCatalog, setIsFetchingOnnxCatalog] = useState(false);
   const [isDownloadingOnnx, setIsDownloadingOnnx] = useState(false);
+  const [isEnsuringTokenizer, setIsEnsuringTokenizer] = useState(false);
   const [selectedOnnxFiles, setSelectedOnnxFiles] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -168,6 +171,19 @@ export default function TranslatorPage() {
     for (const path of candidates) {
       try {
         return await axiosInstance.post(path, { files }, { timeout: 0 });
+      } catch (err: any) {
+        lastErr = err;
+      }
+    }
+    throw lastErr;
+  }
+
+  async function postFirstSuccessfulEnsureTokenizer(forceDownload: boolean) {
+    const candidates = ["/onnx_tokenizer/ensure", "/api/onnx_tokenizer/ensure"];
+    let lastErr: any = null;
+    for (const path of candidates) {
+      try {
+        return await axiosInstance.post(path, { force_download: forceDownload }, { timeout: 0 });
       } catch (err: any) {
         lastErr = err;
       }
@@ -276,6 +292,23 @@ export default function TranslatorPage() {
       setLogs((l) => [...l, `Preload error: ${err?.response?.data?.error || err.message}`]);
     } finally {
       setIsPreloading(false);
+    }
+  }
+
+  async function ensureTokenizer(forceDownload: boolean) {
+    if (isEnsuringTokenizer) return;
+    setIsEnsuringTokenizer(true);
+    setLogs((l) => [...l, forceDownload ? "Forcing tokenizer refresh..." : "Ensuring tokenizer assets..."]);
+
+    try {
+      await postFirstSuccessfulEnsureTokenizer(forceDownload);
+      setLogs((l) => [...l, "Tokenizer ready"]);
+      await fetchTranslatorStatus();
+    } catch (err: any) {
+      console.error("Tokenizer ensure error:", err);
+      setLogs((l) => [...l, `Tokenizer ensure error: ${err?.response?.data?.error || err.message}`]);
+    } finally {
+      setIsEnsuringTokenizer(false);
     }
   }
 
@@ -477,6 +510,21 @@ export default function TranslatorPage() {
               ) : (
                 <div className="text-green-700 dark:text-green-300">All required ONNX assets look valid</div>
               )}
+            </div>
+
+            {/* Tokenizer Status */}
+            <div className={`mb-2 p-2 rounded text-xs ${translatorStatus.onnx.tokenizer_ready ? "bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800" : "bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800"}`}>
+              <div className="font-medium mb-1">Tokenizer</div>
+              <div className={translatorStatus.onnx.tokenizer_ready ? "text-green-700 dark:text-green-300" : "text-amber-700 dark:text-amber-300"}>
+                {translatorStatus.onnx.tokenizer_ready ? "Ready" : "Missing or incomplete"}
+              </div>
+              <button
+                onClick={() => ensureTokenizer(!translatorStatus.onnx.tokenizer_ready)}
+                disabled={isEnsuringTokenizer}
+                className="mt-2 px-2 py-1 rounded text-xs bg-indigo-600 text-white disabled:opacity-50"
+              >
+                {isEnsuringTokenizer ? "Preparing..." : (translatorStatus.onnx.tokenizer_ready ? "Refresh Tokenizer" : "Retry Tokenizer Download")}
+              </button>
             </div>
 
             {/* Active Models */}
