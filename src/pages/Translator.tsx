@@ -69,6 +69,13 @@ interface TranslatorStatus {
       lm_head?: { valid: boolean; reason: string; size_bytes: number };
     };
     issues?: string[];
+    model_auto_prepare?: {
+      attempted: boolean;
+      ok: boolean;
+      error?: string | null;
+      requested_files?: string[];
+      downloaded_files?: string[];
+    };
     active_models?: {
       encoder: string;
       decoder: string;
@@ -81,6 +88,13 @@ interface TranslatorStatus {
   nllb: {
     available: boolean;
     model: string;
+    downloaded?: boolean;
+    local_path?: string;
+  };
+  downloaded_models?: {
+    onnx?: string[];
+    nllb?: string[];
+    all?: string[];
   };
 }
 
@@ -103,6 +117,7 @@ const FALLBACK_DEFAULT_ONNX_FILES = [
   "m2m100_encoder_w8a32_SAFE.onnx",
   "m2m100_decoder_w8a32.onnx",
   "m2m100_lm_head.onnx",
+  "m2m100_lm_head.onnx.data",
 ];
 
 export default function TranslatorPage() {
@@ -124,9 +139,15 @@ export default function TranslatorPage() {
   const [isEnsuringTokenizer, setIsEnsuringTokenizer] = useState(false);
   const [selectedOnnxFiles, setSelectedOnnxFiles] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const autoDefaultDownloadAttemptedRef = useRef<boolean>(false);
+  const defaultOnnxFiles = onnxCatalog?.default_files?.length
+    ? onnxCatalog.default_files
+    : FALLBACK_DEFAULT_ONNX_FILES;
+  const areDefaultOnnxFilesSelected = defaultOnnxFiles.every((file) => selectedOnnxFiles.includes(file));
 
   useEffect(() => {
     fetchTranslatorStatus();
+    fetchOnnxCatalog(false);
   }, []);
 
   React.useEffect(() => {
@@ -141,7 +162,14 @@ export default function TranslatorPage() {
       setTranslatorStatus(res.data);
       setSelectedBackend(res.data.active_translator);
       setLogs((l) => [...l, `Translator status: ${res.data.active_translator.toUpperCase()}`]);
-      if (!res.data.onnx.available) {
+
+      if (!res.data.onnx.available && !autoDefaultDownloadAttemptedRef.current && !isDownloadingOnnx) {
+        autoDefaultDownloadAttemptedRef.current = true;
+        setLogs((l) => [...l, "ONNX unavailable. Auto-downloading default ONNX models..."]);
+        await downloadOnnxModels(true);
+      }
+
+      if (!onnxCatalog) {
         fetchOnnxCatalog(false);
       }
     } catch (err: any) {
@@ -219,6 +247,19 @@ export default function TranslatorPage() {
     ));
   }
 
+  function toggleDefaultOnnxSelection(checked: boolean) {
+    setSelectedOnnxFiles((prev) => {
+      if (checked) {
+        const merged = [...prev];
+        defaultOnnxFiles.forEach((name) => {
+          if (!merged.includes(name)) merged.push(name);
+        });
+        return merged;
+      }
+      return prev.filter((name) => !defaultOnnxFiles.includes(name));
+    });
+  }
+
   async function downloadOnnxModels(useDefaults: boolean) {
     if (isDownloadingOnnx) return;
     const files = useDefaults
@@ -233,6 +274,10 @@ export default function TranslatorPage() {
     setLogs((l) => [...l, `Downloading ${files.length} ONNX file(s)...`]);
     try {
       const res = await postFirstSuccessfulDownload(files);
+      const progress: string[] = res?.data?.progress || [];
+      progress.forEach((entry) => {
+        setLogs((l) => [...l, entry]);
+      });
       const downloaded = res?.data?.downloaded?.length || 0;
       setLogs((l) => [...l, `Downloaded ${downloaded} ONNX file(s)`]);
       await fetchTranslatorStatus();
@@ -271,20 +316,25 @@ export default function TranslatorPage() {
   async function preloadTranslator() {
     if (isPreloading) return;
 
-    if (selectedBackend === "onnx" && translatorStatus && !translatorStatus.onnx.available) {
-      setLogs((l) => [...l, "ONNX models not available"]);
-      return;
-    }
-
     setIsPreloading(true);
     setLogs((l) => [...l, `Preloading ${selectedBackend.toUpperCase()} translator...`]);
 
     try {
-      await axiosInstance.post(
+      const res = await axiosInstance.post(
         "/translator_preload",
         { use_onnx: selectedBackend === "onnx" },
         { timeout: 0 }
       );
+
+      const autoDownload = res?.data?.details?.auto_download;
+      const progress: string[] = autoDownload?.progress || [];
+      if (progress.length) {
+        setLogs((l) => [...l, "Default ONNX models not found. Downloading default ONNX models..."]);
+        progress.forEach((entry) => {
+          setLogs((l) => [...l, entry]);
+        });
+      }
+
       setLogs((l) => [...l, `${selectedBackend.toUpperCase()} preload complete`]);
       await fetchTranslatorStatus();
     } catch (err: any) {
@@ -379,6 +429,14 @@ export default function TranslatorPage() {
           if (payload.type === "meta") {
             setLastBackendUsed(payload.backend || selectedBackend);
             setLogs((l) => [...l, `Backend: ${(payload.backend || selectedBackend).toUpperCase()}`]);
+            const autoDownload = payload.auto_download;
+            const progress: string[] = autoDownload?.progress || [];
+            if (progress.length) {
+              setLogs((l) => [...l, "Default ONNX models not found. Downloading default ONNX models..."]);
+              progress.forEach((entry) => {
+                setLogs((l) => [...l, entry]);
+              });
+            }
           } else if (payload.type === "sentence") {
             const translated: string = String(payload.translated || "");
             const words = translated.split(/\s+/).filter(Boolean);
@@ -494,7 +552,33 @@ export default function TranslatorPage() {
               </div>
               <div className="flex items-center gap-2">
                 <div className={`w-2 h-2 rounded-full ${translatorStatus.active_translator === "nllb" ? "bg-green-500" : "bg-gray-400"}`}></div>
-                <span>NLLB: {translatorStatus.nllb.available ? "✓ Available" : "✗ Unavailable"}</span>
+                <span>
+                  NLLB: {translatorStatus.nllb.available ? "✓ Available" : "✗ Unavailable"}
+                  {translatorStatus.nllb.downloaded ? " • Downloaded" : " • Not downloaded"}
+                </span>
+              </div>
+            </div>
+
+            <div className="mb-2 p-2 bg-white dark:bg-slate-800 rounded text-xs">
+              <div className="font-medium text-gray-700 dark:text-gray-300 mb-1">Downloaded Models</div>
+              <div className="text-gray-600 dark:text-gray-400 space-y-1">
+                <div className="font-semibold">ONNX</div>
+                {(translatorStatus.downloaded_models?.onnx?.length || 0) > 0 ? (
+                  translatorStatus.downloaded_models?.onnx?.map((name) => (
+                    <div key={`onnx-${name}`}>• {name}</div>
+                  ))
+                ) : (
+                  <div>• None</div>
+                )}
+
+                <div className="font-semibold pt-1">NLLB</div>
+                {(translatorStatus.downloaded_models?.nllb?.length || 0) > 0 ? (
+                  translatorStatus.downloaded_models?.nllb?.map((name) => (
+                    <div key={`nllb-${name}`}>• {name}</div>
+                  ))
+                ) : (
+                  <div>• None</div>
+                )}
               </div>
             </div>
 
@@ -575,7 +659,7 @@ export default function TranslatorPage() {
               <div className="mt-3 p-2 bg-white dark:bg-slate-800 rounded border border-blue-100 dark:border-blue-800">
                 <div className="text-xs font-semibold mb-2">ONNX models unavailable</div>
                 <div className="text-[11px] text-gray-600 dark:text-gray-400 mb-2">
-                  Download defaults (encoder w8a32 SAFE, decoder w8a32, lm_head) or pick other variants from Drive.
+                  Download defaults (encoder w8a32 SAFE, decoder w8a32, lm_head, m2m100_lm_head.onnx.data) or pick other variants from Drive.
                 </div>
 
                 <div className="flex gap-2 mb-2">
@@ -594,6 +678,15 @@ export default function TranslatorPage() {
                     {isFetchingOnnxCatalog ? "Refreshing..." : "Refresh List"}
                   </button>
                 </div>
+
+                <label className="flex items-center gap-2 text-[11px] mb-2">
+                  <input
+                    type="checkbox"
+                    checked={areDefaultOnnxFilesSelected}
+                    onChange={(e) => toggleDefaultOnnxSelection(e.target.checked)}
+                  />
+                  <span>Select default file set</span>
+                </label>
 
                 {onnxCatalog?.files?.length ? (
                   <div className="max-h-32 overflow-y-auto border rounded p-2 bg-slate-50 dark:bg-slate-900 mb-2">
