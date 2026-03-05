@@ -1,4 +1,3 @@
-import React from "react";
 import ModelList from "../components/ModelList";
 import Controls from "../components/Controls";
 import ChatView from "../components/ChatView";
@@ -8,25 +7,32 @@ import type { Message } from "../App";
 type Props = {
   models: string[];
   translatorModels: Array<{
-    id: "onnx" | "nllb";
+    id: "m2m_onnx" | "nllb_onnx" | "nllb_pytorch";
+    label: string;
+    available: boolean;
+    loaded: boolean;
+  }>;
+  ragModels: Array<{
+    id: string;
     label: string;
     available: boolean;
     loaded: boolean;
   }>;
   selectedModel: string | null;
   loadedModel: string | null;
-  running: boolean;
   messages: Message[];
   logs: string[];
   language: string;
   pipelineMetrics: any | null;
   onRefreshModels: () => Promise<void> | void;
   onRefreshTranslatorModels: () => Promise<void> | void;
-  onLoadTranslatorModel: (id: "onnx" | "nllb") => Promise<void> | void;
+  onRefreshRagModels: () => Promise<void> | void;
+  onLoadTranslatorModel: (id: "m2m_onnx" | "nllb_onnx" | "nllb_pytorch") => Promise<void> | void;
+  onUnloadTranslatorModel: () => Promise<void> | void;
+  onLoadRagModel: (id: string) => Promise<void> | void;
+  onUnloadRagModel: () => Promise<void> | void;
   onLoadModel: (id: string) => Promise<void> | void;
   onUnloadModel: () => Promise<void> | void;
-  onStartModel: () => Promise<void> | void;
-  onStopModel: () => Promise<void> | void;
   onSendMessage: (text: string) => Promise<void> | void;
   setLanguage: (s: string) => void;
 };
@@ -34,20 +40,22 @@ type Props = {
 export default function PipelinePage({
   models,
   translatorModels,
+  ragModels,
   selectedModel,
   loadedModel,
-  running,
   messages,
   logs,
   language,
   pipelineMetrics,
   onRefreshModels,
   onRefreshTranslatorModels,
+  onRefreshRagModels,
   onLoadTranslatorModel,
+  onUnloadTranslatorModel,
+  onLoadRagModel,
+  onUnloadRagModel,
   onLoadModel,
   onUnloadModel,
-  onStartModel,
-  onStopModel,
   onSendMessage,
   setLanguage,
 }: Props) {
@@ -58,7 +66,7 @@ export default function PipelinePage({
       <aside className="col-span-3 p-4 bg-slate-900 rounded-xl shadow-lg">
 
         <h2 className="text-lg font-semibold mb-4 text-white">
-          Models
+          Available Models
         </h2>
 
         <ModelList
@@ -67,6 +75,7 @@ export default function PipelinePage({
           loadedModel={loadedModel}
           onRefresh={onRefreshModels}
           onLoad={onLoadModel}
+          onUnload={onUnloadModel}
         />
 
         <div className="mt-6">
@@ -91,9 +100,17 @@ export default function PipelinePage({
               <div key={m.id} className={`p-2 rounded border flex justify-between items-center ${m.loaded ? "ring-2 ring-indigo-400" : ""}`}>
                 <div className="truncate">{m.label}</div>
                 {m.loaded ? (
-                  <span className="text-xs px-2 py-1 bg-green-100 text-green-800 rounded">
-                    Loaded
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs px-2 py-1 bg-green-100 text-green-800 rounded">
+                      Loaded
+                    </span>
+                    <button
+                      onClick={onUnloadTranslatorModel}
+                      className="text-xs px-2 py-1 bg-red-600 text-white rounded"
+                    >
+                      Unload
+                    </button>
+                  </div>
                 ) : (
                   <button
                     onClick={() => onLoadTranslatorModel(m.id)}
@@ -109,9 +126,54 @@ export default function PipelinePage({
         </div>
 
         <div className="mt-6">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-sm font-medium">RAG Models</div>
+            <button
+              onClick={onRefreshRagModels}
+              className="text-xs px-2 py-1 bg-indigo-100 rounded"
+            >
+              Refresh
+            </button>
+          </div>
+
+          <div className="space-y-2">
+            {ragModels.length === 0 && (
+              <div className="text-sm text-gray-500">
+                No RAG backends found.
+              </div>
+            )}
+
+            {ragModels.map((m) => (
+              <div key={m.id} className={`p-2 rounded border flex justify-between items-center ${m.loaded ? "ring-2 ring-indigo-400" : ""}`}>
+                <div className="truncate">{m.label}</div>
+                {m.loaded ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs px-2 py-1 bg-green-100 text-green-800 rounded">
+                      Loaded
+                    </span>
+                    <button
+                      onClick={onUnloadRagModel}
+                      className="text-xs px-2 py-1 bg-red-600 text-white rounded"
+                    >
+                      Unload
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => onLoadRagModel(m.id)}
+                    disabled={!m.available}
+                    className="text-xs px-2 py-1 bg-green-600 text-white rounded disabled:opacity-50"
+                  >
+                    Load
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-6">
           <Controls
-            loadedModel={loadedModel}
-            onUnload={onUnloadModel}
             language={language}
             setLanguage={setLanguage}
           />

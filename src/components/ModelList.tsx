@@ -1,5 +1,4 @@
 // src/components/ModelList.tsx
-import React from "react";
 
 type Props = {
   models: string[];
@@ -7,13 +6,14 @@ type Props = {
   loadedModel?: string | null;
   onRefresh: () => void;
   onLoad: (id: string) => void;
+  onUnload: () => void;
 };
 
-export default function ModelList({ models, selected, loadedModel, onRefresh, onLoad }: Props) {
+export default function ModelList({ models, selected, loadedModel, onRefresh, onLoad, onUnload }: Props) {
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <div className="text-sm font-medium">Available</div>
+        <div className="text-sm font-medium">LLM Models</div>
         <button onClick={onRefresh} className="text-xs px-2 py-1 bg-indigo-100 rounded">Refresh</button>
       </div>
 
@@ -24,10 +24,18 @@ export default function ModelList({ models, selected, loadedModel, onRefresh, on
             <div className="truncate">{m}</div>
             <div className="flex gap-2">
               {loadedModel === m ? (
-                <span className="text-xs px-2 py-1 bg-green-100 text-green-800 rounded">Loaded</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs px-2 py-1 bg-green-100 text-green-800 rounded">Loaded</span>
+                  <button
+                    className="text-xs px-2 py-1 bg-red-600 text-white rounded"
+                    onClick={onUnload}
+                  >
+                    Unload
+                  </button>
+                </div>
               ) : (
                 <button
-                  className="text-xs px-2 py-1 bg-green-100 rounded"
+                  className="text-xs px-2 py-1 bg-green-600 text-white rounded"
                   onClick={() => onLoad(m)}
                 >
                   Load

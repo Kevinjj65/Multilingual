@@ -3,6 +3,15 @@ import SystemMetrics from "../components/SystemMetrics";
 import axiosInstance from "../lib/axiosInstance";
 
 interface TranslatorMetrics {
+  dataset?: {
+    name?: string;
+    split?: string;
+    samples_evaluated?: number;
+    src_lang?: string;
+    tgt_lang?: string;
+    backend?: string;
+    source?: string;
+  };
   end_to_end_time_s: number;
   input: {
     char_length: number;
@@ -26,14 +35,23 @@ interface TranslatorMetrics {
   };
   quality: {
     bleu_score: number;
+    corpus_bleu?: number;
     char_length_similarity_pct: number;
     chrf_score: number;
+    corpus_chrf?: number;
     forward_output_chars: number;
     forward_output_tokens: number;
     roundtrip_output_chars: number;
     roundtrip_output_tokens: number;
   };
+  examples?: Array<{
+    source: string;
+    reference: string;
+    hypothesis: string;
+  }>;
   throughput: {
+    avg_time_per_sentence_s?: number;
+    total_time_s?: number;
     forward: {
       chars_per_sec: number;
       time_s: number;
@@ -54,27 +72,22 @@ interface TranslatorMetrics {
 }
 
 interface TranslatorStatus {
-  active_translator: "onnx" | "nllb";
+  active_translator: string;
+  active_translator_key?: "onnx" | "nllb";
+  active_onnx_family?: "m2m" | "nllb";
+  onnx_backend_name?: string;
+  onnx_families?: {
+    m2m?: { available?: boolean };
+    nllb?: { available?: boolean };
+  };
   onnx: {
     available: boolean;
+    family?: "m2m" | "nllb";
     models_dir: string;
     models: {
       encoder: boolean;
       decoder: boolean;
       lm_head: boolean;
-    };
-    asset_checks?: {
-      encoder?: { valid: boolean; reason: string; size_bytes: number };
-      decoder?: { valid: boolean; reason: string; size_bytes: number };
-      lm_head?: { valid: boolean; reason: string; size_bytes: number };
-    };
-    issues?: string[];
-    model_auto_prepare?: {
-      attempted: boolean;
-      ok: boolean;
-      error?: string | null;
-      requested_files?: string[];
-      downloaded_files?: string[];
     };
     active_models?: {
       encoder: string;
@@ -82,43 +95,28 @@ interface TranslatorStatus {
       lm_head: string;
     };
     tokenizer_available: boolean;
-    tokenizer_ready?: boolean;
-    tokenizer_dir?: string;
   };
   nllb: {
     available: boolean;
     model: string;
-    downloaded?: boolean;
-    local_path?: string;
-  };
-  downloaded_models?: {
-    onnx?: string[];
-    nllb?: string[];
-    all?: string[];
   };
 }
 
-interface OnnxCatalogFile {
-  id: string;
-  name: string;
-  view_url: string;
-}
-
-interface OnnxCatalogResponse {
-  ok: boolean;
-  folder_url: string;
-  folder_id: string;
+interface OnnxCatalogStatus {
+  family: "m2m" | "nllb";
   default_files: string[];
-  files: OnnxCatalogFile[];
-  error?: string;
+  downloaded_files: string[];
+  all_default_downloaded: boolean;
+  tokenizer_ready: boolean;
+  tokenizer_error?: string | null;
+  family_files_status: Array<{
+    name: string;
+    downloaded: boolean;
+  }>;
+  total_family_files: number;
+  downloaded_family_files: number;
+  all_family_downloaded: boolean;
 }
-
-const FALLBACK_DEFAULT_ONNX_FILES = [
-  "m2m100_encoder_w8a32_SAFE.onnx",
-  "m2m100_decoder_w8a32.onnx",
-  "m2m100_lm_head.onnx",
-  "m2m100_lm_head.onnx.data",
-];
 
 export default function TranslatorPage() {
   const [input, setInput] = useState("");
@@ -127,27 +125,27 @@ export default function TranslatorPage() {
   const [logs, setLogs] = useState<string[]>([]);
   const [srcLang, setSrcLang] = useState("hi");
   const [metrics, setMetrics] = useState<TranslatorMetrics | null>(null);
+  const [metricsError, setMetricsError] = useState<string | null>(null);
   const [isMeasuring, setIsMeasuring] = useState(false);
+  const [metricsDataset, setMetricsDataset] = useState<"demo" | "flores200">("demo");
+  const [floresSplit, setFloresSplit] = useState<"dev" | "devtest">("devtest");
+  const [floresSamples, setFloresSamples] = useState<number>(100);
   const [translatorStatus, setTranslatorStatus] = useState<TranslatorStatus | null>(null);
-  const [selectedBackend, setSelectedBackend] = useState<"onnx" | "nllb">("onnx");  // Default to ONNX
-  const [isTogglingBackend, setIsTogglingBackend] = useState(false);
-  const [isPreloading, setIsPreloading] = useState(false);
+  const [selectedBackend, setSelectedBackend] = useState<"onnx" | "nllb">("onnx");
+  const [backendLoading, setBackendLoading] = useState<"m2m_onnx" | "nllb_onnx" | "nllb_pytorch" | null>(null);
+  const [downloadingFamily, setDownloadingFamily] = useState<"m2m" | "nllb" | null>(null);
+  const [downloadingFileKey, setDownloadingFileKey] = useState<string | null>(null);
+  const [downloadingTokenizerFamily, setDownloadingTokenizerFamily] = useState<"m2m" | "nllb" | null>(null);
+  const [onnxCatalogStatus, setOnnxCatalogStatus] = useState<Record<"m2m" | "nllb", OnnxCatalogStatus | null>>({
+    m2m: null,
+    nllb: null,
+  });
   const [lastBackendUsed, setLastBackendUsed] = useState<string | null>(null);
-  const [onnxCatalog, setOnnxCatalog] = useState<OnnxCatalogResponse | null>(null);
-  const [isFetchingOnnxCatalog, setIsFetchingOnnxCatalog] = useState(false);
-  const [isDownloadingOnnx, setIsDownloadingOnnx] = useState(false);
-  const [isEnsuringTokenizer, setIsEnsuringTokenizer] = useState(false);
-  const [selectedOnnxFiles, setSelectedOnnxFiles] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const autoDefaultDownloadAttemptedRef = useRef<boolean>(false);
-  const defaultOnnxFiles = onnxCatalog?.default_files?.length
-    ? onnxCatalog.default_files
-    : FALLBACK_DEFAULT_ONNX_FILES;
-  const areDefaultOnnxFilesSelected = defaultOnnxFiles.every((file) => selectedOnnxFiles.includes(file));
+  const activeOnnxFamily = translatorStatus?.onnx?.family === "nllb" ? "nllb" : "m2m";
 
   useEffect(() => {
     fetchTranslatorStatus();
-    fetchOnnxCatalog(false);
   }, []);
 
   React.useEffect(() => {
@@ -160,205 +158,148 @@ export default function TranslatorPage() {
     try {
       const res = await axiosInstance.get<TranslatorStatus>("/translator_status");
       setTranslatorStatus(res.data);
-      setSelectedBackend(res.data.active_translator);
-      setLogs((l) => [...l, `Translator status: ${res.data.active_translator.toUpperCase()}`]);
-
-      if (!res.data.onnx.available && !autoDefaultDownloadAttemptedRef.current && !isDownloadingOnnx) {
-        autoDefaultDownloadAttemptedRef.current = true;
-        setLogs((l) => [...l, "ONNX unavailable. Auto-downloading default ONNX models..."]);
-        await downloadOnnxModels(true);
-      }
-
-      if (!onnxCatalog) {
-        fetchOnnxCatalog(false);
-      }
+      const activeKey = res.data.active_translator_key ?? (res.data.active_translator === "nllb" ? "nllb" : "onnx");
+      setSelectedBackend(activeKey);
+      setLogs((l) => [...l, `Translator status: ${String(res.data.active_translator).toUpperCase()}`]);
+      await fetchOnnxDownloadStatus();
     } catch (err: any) {
       console.error("Translator status error:", err);
       setLogs((l) => [...l, `Status error: ${err?.message}`]);
     }
   }
 
-  async function getFirstSuccessfulCatalog(refresh: boolean): Promise<OnnxCatalogResponse> {
-    const suffix = refresh ? "?refresh=true" : "";
-    const candidates = [`/onnx_models/catalog${suffix}`, `/api/onnx_models/catalog${suffix}`];
-    let lastErr: any = null;
-    for (const path of candidates) {
-      try {
-        const res = await axiosInstance.get<OnnxCatalogResponse>(path);
-        return res.data;
-      } catch (err: any) {
-        lastErr = err;
-      }
-    }
-    throw lastErr;
-  }
-
-  async function postFirstSuccessfulDownload(files: string[]) {
-    const candidates = ["/onnx_models/download", "/api/onnx_models/download"];
-    let lastErr: any = null;
-    for (const path of candidates) {
-      try {
-        return await axiosInstance.post(path, { files }, { timeout: 0 });
-      } catch (err: any) {
-        lastErr = err;
-      }
-    }
-    throw lastErr;
-  }
-
-  async function postFirstSuccessfulEnsureTokenizer(forceDownload: boolean) {
-    const candidates = ["/onnx_tokenizer/ensure", "/api/onnx_tokenizer/ensure"];
-    let lastErr: any = null;
-    for (const path of candidates) {
-      try {
-        return await axiosInstance.post(path, { force_download: forceDownload }, { timeout: 0 });
-      } catch (err: any) {
-        lastErr = err;
-      }
-    }
-    throw lastErr;
-  }
-
-  async function fetchOnnxCatalog(refresh: boolean) {
-    if (isFetchingOnnxCatalog) return;
-    setIsFetchingOnnxCatalog(true);
+  async function fetchOnnxDownloadStatus() {
     try {
-      const catalog = await getFirstSuccessfulCatalog(refresh);
-      setOnnxCatalog(catalog);
-      if (catalog.default_files?.length) {
-        setSelectedOnnxFiles(catalog.default_files);
-      } else {
-        setSelectedOnnxFiles(FALLBACK_DEFAULT_ONNX_FILES);
-      }
-      setLogs((l) => [...l, `ONNX catalog loaded (${catalog.files?.length || 0} files)`]);
+      const [m2mRes, nllbRes] = await Promise.all([
+        axiosInstance.get<OnnxCatalogStatus>("/onnx_models/catalog?family=m2m"),
+        axiosInstance.get<OnnxCatalogStatus>("/onnx_models/catalog?family=nllb"),
+      ]);
+      setOnnxCatalogStatus({
+        m2m: m2mRes.data,
+        nllb: nllbRes.data,
+      });
     } catch (err: any) {
-      console.error("ONNX catalog error:", err);
-      setSelectedOnnxFiles(FALLBACK_DEFAULT_ONNX_FILES);
-      setLogs((l) => [...l, `Catalog error: ${err?.response?.data?.error || err.message}`]);
-      setLogs((l) => [...l, "Using default ONNX file set for download"]) ;
-    } finally {
-      setIsFetchingOnnxCatalog(false);
+      setLogs((l) => [...l, `Catalog status error: ${err?.response?.data?.error || err?.message || err}`]);
     }
   }
 
-  function toggleOnnxFileSelection(fileName: string) {
-    setSelectedOnnxFiles((prev) => (
-      prev.includes(fileName) ? prev.filter((name) => name !== fileName) : [...prev, fileName]
-    ));
-  }
+  async function loadTranslationBackend(target: "m2m_onnx" | "nllb_onnx" | "nllb_pytorch") {
+    if (!translatorStatus || backendLoading) return;
 
-  function toggleDefaultOnnxSelection(checked: boolean) {
-    setSelectedOnnxFiles((prev) => {
-      if (checked) {
-        const merged = [...prev];
-        defaultOnnxFiles.forEach((name) => {
-          if (!merged.includes(name)) merged.push(name);
-        });
-        return merged;
-      }
-      return prev.filter((name) => !defaultOnnxFiles.includes(name));
-    });
-  }
-
-  async function downloadOnnxModels(useDefaults: boolean) {
-    if (isDownloadingOnnx) return;
-    const files = useDefaults
-      ? (onnxCatalog?.default_files?.length ? onnxCatalog.default_files : FALLBACK_DEFAULT_ONNX_FILES)
-      : selectedOnnxFiles;
-    if (!files.length) {
-      setLogs((l) => [...l, "Select at least one ONNX file to download"]);
+    if (target === "m2m_onnx" && !translatorStatus.onnx_families?.m2m?.available) {
+      setLogs((l) => [...l, "M2M ONNX models/tokenizer not available"]);
+      return;
+    }
+    if (target === "nllb_onnx" && !translatorStatus.onnx_families?.nllb?.available) {
+      setLogs((l) => [...l, "NLLB ONNX models/tokenizer not available"]);
       return;
     }
 
-    setIsDownloadingOnnx(true);
-    setLogs((l) => [...l, `Downloading ${files.length} ONNX file(s)...`]);
+    setBackendLoading(target);
     try {
-      const res = await postFirstSuccessfulDownload(files);
-      const progress: string[] = res?.data?.progress || [];
-      progress.forEach((entry) => {
-        setLogs((l) => [...l, entry]);
-      });
-      const downloaded = res?.data?.downloaded?.length || 0;
-      setLogs((l) => [...l, `Downloaded ${downloaded} ONNX file(s)`]);
+      const useOnnx = target !== "nllb_pytorch";
+      const onnxFamily = target === "nllb_onnx" ? "nllb" : "m2m";
+      await axiosInstance.post("/toggle_translator", {
+        use_onnx: useOnnx,
+        onnx_family: onnxFamily,
+      }, { timeout: 120000 });
+      await fetchTranslatorStatus();
+      const displayName = target === "m2m_onnx" ? "M2M ONNX" : target === "nllb_onnx" ? "NLLB ONNX" : "NLLB PyTorch";
+      setLogs((l) => [...l, `Loaded translation backend: ${displayName}`]);
+    } catch (err: any) {
+      console.error("Load backend error:", err);
+      setLogs((l) => [...l, `Load error: ${err?.response?.data?.error || err.message}`]);
+    } finally {
+      setBackendLoading(null);
+    }
+  }
+
+  async function downloadOnnxModels(family: "m2m" | "nllb") {
+    if (downloadingFamily) return;
+    setDownloadingFamily(family);
+    setLogs((l) => [...l, `Downloading ${family.toUpperCase()} ONNX models...`]);
+
+    try {
+      const res = await axiosInstance.post("/onnx_models/download", {
+        family,
+        include_tokenizer: true,
+      }, { timeout: 0 });
+
+      const requested = Array.isArray(res.data?.requested_files) ? res.data.requested_files.length : 0;
+      const downloaded = Array.isArray(res.data?.downloaded) ? res.data.downloaded.length : 0;
+      const downloadedItems: Array<{ name?: string }> = Array.isArray(res.data?.downloaded) ? res.data.downloaded : [];
+
+      if (downloadedItems.length > 0) {
+        setLogs((l) => [
+          ...l,
+          ...downloadedItems
+            .map((item) => String(item?.name || "").trim())
+            .filter(Boolean)
+            .map((name) => `Downloaded model: ${name}`),
+        ]);
+      } else {
+        const progressItems: string[] = Array.isArray(res.data?.progress) ? res.data.progress : [];
+        const completionLines = progressItems
+          .filter((line) => typeof line === "string" && line.toLowerCase().startsWith("downloaded "))
+          .map((line) => `Downloaded model: ${line.replace(/^downloaded\s+/i, "").trim()}`);
+        if (completionLines.length > 0) {
+          setLogs((l) => [...l, ...completionLines]);
+        }
+      }
+
+      setLogs((l) => [...l, `Default ${family.toUpperCase()} ONNX models download complete (${downloaded}/${requested} files)`]);
+      await fetchOnnxDownloadStatus();
       await fetchTranslatorStatus();
     } catch (err: any) {
       console.error("ONNX download error:", err);
       setLogs((l) => [...l, `Download error: ${err?.response?.data?.error || err.message}`]);
-      if (err?.response?.status === 404) {
-        setLogs((l) => [...l, "Backend route not found. Restart backend from mainproj/server.py and retry."]);
-      }
     } finally {
-      setIsDownloadingOnnx(false);
+      setDownloadingFamily(null);
     }
   }
 
-  async function toggleBackend(newBackend: "onnx" | "nllb") {
-    if (!translatorStatus) return;
-    
-    if (newBackend === "onnx" && !translatorStatus.onnx.available) {
-      setLogs((l) => [...l, `ONNX models not available`]);
-      return;
-    }
-
-    setIsTogglingBackend(true);
-    try {
-      await axiosInstance.post("/toggle_translator", { use_onnx: newBackend === "onnx" });
-      setSelectedBackend(newBackend);
-      setLogs((l) => [...l, `Switched to ${newBackend.toUpperCase()} translator`]);
-    } catch (err: any) {
-      console.error("Toggle backend error:", err);
-      setLogs((l) => [...l, `Toggle error: ${err?.response?.data?.error || err.message}`]);
-    } finally {
-      setIsTogglingBackend(false);
-    }
-  }
-
-  async function preloadTranslator() {
-    if (isPreloading) return;
-
-    setIsPreloading(true);
-    setLogs((l) => [...l, `Preloading ${selectedBackend.toUpperCase()} translator...`]);
+  async function downloadSingleOnnxModel(family: "m2m" | "nllb", fileName: string) {
+    if (downloadingFileKey || downloadingFamily) return;
+    const fileKey = `${family}:${fileName}`;
+    setDownloadingFileKey(fileKey);
+    setLogs((l) => [...l, `Downloading ${fileName} (${family.toUpperCase()} family)...`]);
 
     try {
-      const res = await axiosInstance.post(
-        "/translator_preload",
-        { use_onnx: selectedBackend === "onnx" },
-        { timeout: 0 }
-      );
-
-      const autoDownload = res?.data?.details?.auto_download;
-      const progress: string[] = autoDownload?.progress || [];
-      if (progress.length) {
-        setLogs((l) => [...l, "Default ONNX models not found. Downloading default ONNX models..."]);
-        progress.forEach((entry) => {
-          setLogs((l) => [...l, entry]);
-        });
-      }
-
-      setLogs((l) => [...l, `${selectedBackend.toUpperCase()} preload complete`]);
+      await axiosInstance.post("/onnx_models/download", {
+        family,
+        files: [fileName],
+        include_tokenizer: false,
+      }, { timeout: 0 });
+      setLogs((l) => [...l, `Downloaded ${fileName}`]);
+      await fetchOnnxDownloadStatus();
       await fetchTranslatorStatus();
     } catch (err: any) {
-      console.error("Preload translator error:", err);
-      setLogs((l) => [...l, `Preload error: ${err?.response?.data?.error || err.message}`]);
+      console.error("Single ONNX file download error:", err);
+      setLogs((l) => [...l, `File download error (${fileName}): ${err?.response?.data?.error || err.message}`]);
     } finally {
-      setIsPreloading(false);
+      setDownloadingFileKey(null);
     }
   }
 
-  async function ensureTokenizer(forceDownload: boolean) {
-    if (isEnsuringTokenizer) return;
-    setIsEnsuringTokenizer(true);
-    setLogs((l) => [...l, forceDownload ? "Forcing tokenizer refresh..." : "Ensuring tokenizer assets..."]);
+  async function downloadOnnxTokenizer(family: "m2m" | "nllb") {
+    if (downloadingTokenizerFamily || downloadingFamily || downloadingFileKey) return;
+    setDownloadingTokenizerFamily(family);
+    setLogs((l) => [...l, `Downloading tokenizer for ${family.toUpperCase()} ONNX...`]);
 
     try {
-      await postFirstSuccessfulEnsureTokenizer(forceDownload);
-      setLogs((l) => [...l, "Tokenizer ready"]);
+      const res = await axiosInstance.post("/onnx_tokenizer/ensure", {
+        family,
+        force_download: false,
+      }, { timeout: 0 });
+      const modelName = String(res.data?.model || "tokenizer");
+      setLogs((l) => [...l, `Tokenizer downloaded: ${modelName}`]);
+      await fetchOnnxDownloadStatus();
       await fetchTranslatorStatus();
     } catch (err: any) {
-      console.error("Tokenizer ensure error:", err);
-      setLogs((l) => [...l, `Tokenizer ensure error: ${err?.response?.data?.error || err.message}`]);
+      console.error("Tokenizer download error:", err);
+      setLogs((l) => [...l, `Tokenizer download error (${family}): ${err?.response?.data?.error || err.message}`]);
     } finally {
-      setIsEnsuringTokenizer(false);
+      setDownloadingTokenizerFamily(null);
     }
   }
 
@@ -393,7 +334,8 @@ export default function TranslatorPage() {
         },
         body: JSON.stringify({ 
           text: input.trim(),
-          use_onnx: selectedBackend === "onnx"
+          use_onnx: selectedBackend === "onnx",
+          onnx_family: translatorStatus?.active_onnx_family || activeOnnxFamily,
         }),
         signal: controller.signal,
       });
@@ -429,14 +371,6 @@ export default function TranslatorPage() {
           if (payload.type === "meta") {
             setLastBackendUsed(payload.backend || selectedBackend);
             setLogs((l) => [...l, `Backend: ${(payload.backend || selectedBackend).toUpperCase()}`]);
-            const autoDownload = payload.auto_download;
-            const progress: string[] = autoDownload?.progress || [];
-            if (progress.length) {
-              setLogs((l) => [...l, "Default ONNX models not found. Downloading default ONNX models..."]);
-              progress.forEach((entry) => {
-                setLogs((l) => [...l, entry]);
-              });
-            }
           } else if (payload.type === "sentence") {
             const translated: string = String(payload.translated || "");
             const words = translated.split(/\s+/).filter(Boolean);
@@ -490,7 +424,10 @@ export default function TranslatorPage() {
   async function measureMetrics() {
     setIsMeasuring(true);
     setMetrics(null);
-    const backend = selectedBackend === "onnx" ? "ONNX" : "NLLB";
+    setMetricsError(null);
+    const backend = selectedBackend === "onnx"
+      ? (translatorStatus?.onnx_backend_name || "m2m_onnx").toUpperCase()
+      : "NLLB";
     const tgtLang = "en"; // Always translate to English for metrics
     
     // Show model info for ONNX
@@ -508,15 +445,28 @@ export default function TranslatorPage() {
         { 
           src_lang: srcLang, 
           tgt_lang: tgtLang,
-          use_onnx: selectedBackend === "onnx"
+          use_onnx: selectedBackend === "onnx",
+          dataset: metricsDataset,
+          flores_split: floresSplit,
+          flores_samples: floresSamples,
         },
-        { timeout: 60_000 }
+        { timeout: metricsDataset === "flores200" ? 0 : 60_000 }
       );
-      setMetrics(res.data);
+      const payload: any = (res.data as any)?.results ?? res.data;
+      if (payload?.error) {
+        const errMsg = String(payload.error);
+        setMetrics(null);
+        setMetricsError(errMsg);
+        setLogs((l) => [...l, `Metrics error: ${errMsg}`]);
+        return;
+      }
+      setMetrics(payload);
       setLogs((l) => [...l, `${backend} metrics measured successfully!`]);
     } catch (err: any) {
       console.error("Translator metrics error:", err);
-      setLogs((l) => [...l, `Metrics error: ${err?.response?.data?.error || err.message}`]);
+      const errMsg = String(err?.response?.data?.error || err.message || err);
+      setMetricsError(errMsg);
+      setLogs((l) => [...l, `Metrics error: ${errMsg}`]);
     } finally {
       setIsMeasuring(false);
     }
@@ -527,18 +477,6 @@ export default function TranslatorPage() {
       <aside className="col-span-4 p-4 bg-white dark:bg-slate-800 rounded-lg shadow overflow-y-auto max-h-screen">
         <h1 className="text-xl font-semibold mb-3">Translator</h1>
 
-        <button
-          onClick={preloadTranslator}
-          disabled={!!(isPreloading || (selectedBackend === "onnx" && translatorStatus && !translatorStatus.onnx.available))}
-          className={`mb-3 w-full px-3 py-2 rounded text-sm font-medium transition ${
-            isPreloading
-              ? "bg-gray-300"
-              : "bg-amber-600 text-white"
-          }`}
-        >
-          {isPreloading ? "Loading Model..." : "Load Model"}
-        </button>
-
         {/* Backend Selector */}
         {translatorStatus && (
           <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-900/20 rounded border border-blue-200 dark:border-blue-700">
@@ -547,106 +485,47 @@ export default function TranslatorPage() {
             {/* Status Info */}
             <div className="text-xs mb-3 space-y-1">
               <div className="flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full ${translatorStatus.active_translator === "onnx" ? "bg-green-500" : "bg-gray-400"}`}></div>
-                <span>ONNX: {translatorStatus.onnx.available ? "✓ Available" : "✗ Unavailable"}</span>
+                <span>M2M ONNX: {translatorStatus.onnx_families?.m2m?.available ? "✓ Available" : "✗ Unavailable"}</span>
+                {selectedBackend === "onnx" && activeOnnxFamily === "m2m" ? (
+                  <span className="ml-auto px-2 py-0.5 rounded bg-green-600 text-white">Loaded</span>
+                ) : (
+                  <button
+                    onClick={() => loadTranslationBackend("m2m_onnx")}
+                    disabled={backendLoading !== null || !translatorStatus.onnx_families?.m2m?.available}
+                    className="ml-auto px-2 py-0.5 rounded bg-indigo-600 text-white disabled:opacity-50"
+                  >
+                    {backendLoading === "m2m_onnx" ? "Loading..." : "Load"}
+                  </button>
+                )}
               </div>
               <div className="flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full ${translatorStatus.active_translator === "nllb" ? "bg-green-500" : "bg-gray-400"}`}></div>
-                <span>
-                  NLLB: {translatorStatus.nllb.available ? "✓ Available" : "✗ Unavailable"}
-                  {translatorStatus.nllb.downloaded ? " • Downloaded" : " • Not downloaded"}
-                </span>
-              </div>
-            </div>
-
-            <div className="mb-2 p-2 bg-white dark:bg-slate-800 rounded text-xs">
-              <div className="font-medium text-gray-700 dark:text-gray-300 mb-1">Downloaded Models</div>
-              <div className="text-gray-600 dark:text-gray-400 space-y-1">
-                <div className="font-semibold">ONNX</div>
-                {(translatorStatus.downloaded_models?.onnx?.length || 0) > 0 ? (
-                  translatorStatus.downloaded_models?.onnx?.map((name) => (
-                    <div key={`onnx-${name}`}>• {name}</div>
-                  ))
+                <span>NLLB ONNX: {translatorStatus.onnx_families?.nllb?.available ? "✓ Available" : "✗ Unavailable"}</span>
+                {selectedBackend === "onnx" && activeOnnxFamily === "nllb" ? (
+                  <span className="ml-auto px-2 py-0.5 rounded bg-green-600 text-white">Loaded</span>
                 ) : (
-                  <div>• None</div>
-                )}
-
-                <div className="font-semibold pt-1">NLLB</div>
-                {(translatorStatus.downloaded_models?.nllb?.length || 0) > 0 ? (
-                  translatorStatus.downloaded_models?.nllb?.map((name) => (
-                    <div key={`nllb-${name}`}>• {name}</div>
-                  ))
-                ) : (
-                  <div>• None</div>
+                  <button
+                    onClick={() => loadTranslationBackend("nllb_onnx")}
+                    disabled={backendLoading !== null || !translatorStatus.onnx_families?.nllb?.available}
+                    className="ml-auto px-2 py-0.5 rounded bg-indigo-600 text-white disabled:opacity-50"
+                  >
+                    {backendLoading === "nllb_onnx" ? "Loading..." : "Load"}
+                  </button>
                 )}
               </div>
-            </div>
-
-            {/* ONNX Asset Health */}
-            <div className={`mb-2 p-2 rounded text-xs ${translatorStatus.onnx.issues?.length ? "bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800" : "bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800"}`}>
-              <div className="font-medium mb-1">ONNX Asset Health</div>
-              {translatorStatus.onnx.issues?.length ? (
-                <div className="space-y-0.5 text-red-700 dark:text-red-300">
-                  {translatorStatus.onnx.issues.map((issue) => (
-                    <div key={issue}>• {issue}</div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-green-700 dark:text-green-300">All required ONNX assets look valid</div>
-              )}
-            </div>
-
-            {/* Tokenizer Status */}
-            <div className={`mb-2 p-2 rounded text-xs ${translatorStatus.onnx.tokenizer_ready ? "bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800" : "bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800"}`}>
-              <div className="font-medium mb-1">Tokenizer</div>
-              <div className={translatorStatus.onnx.tokenizer_ready ? "text-green-700 dark:text-green-300" : "text-amber-700 dark:text-amber-300"}>
-                {translatorStatus.onnx.tokenizer_ready ? "Ready" : "Missing or incomplete"}
+              <div className="flex items-center gap-2">
+                <span>NLLB PyTorch: {translatorStatus.nllb.available ? "✓ Available" : "✗ Unavailable"}</span>
+                {selectedBackend === "nllb" ? (
+                  <span className="ml-auto px-2 py-0.5 rounded bg-green-600 text-white">Loaded</span>
+                ) : (
+                  <button
+                    onClick={() => loadTranslationBackend("nllb_pytorch")}
+                    disabled={backendLoading !== null || !translatorStatus.nllb.available}
+                    className="ml-auto px-2 py-0.5 rounded bg-indigo-600 text-white disabled:opacity-50"
+                  >
+                    {backendLoading === "nllb_pytorch" ? "Loading..." : "Load"}
+                  </button>
+                )}
               </div>
-              <button
-                onClick={() => ensureTokenizer(!translatorStatus.onnx.tokenizer_ready)}
-                disabled={isEnsuringTokenizer}
-                className="mt-2 px-2 py-1 rounded text-xs bg-indigo-600 text-white disabled:opacity-50"
-              >
-                {isEnsuringTokenizer ? "Preparing..." : (translatorStatus.onnx.tokenizer_ready ? "Refresh Tokenizer" : "Retry Tokenizer Download")}
-              </button>
-            </div>
-
-            {/* Active Models */}
-            {translatorStatus.onnx.active_models && (
-              <div className="mb-2 p-2 bg-white dark:bg-slate-800 rounded text-xs">
-                <div className="font-medium text-gray-700 dark:text-gray-300 mb-1">Active ONNX Models:</div>
-                <div className="text-gray-600 dark:text-gray-400 space-y-0.5">
-                  <div>• Enc: {translatorStatus.onnx.active_models.encoder}</div>
-                  <div>• Dec: {translatorStatus.onnx.active_models.decoder}</div>
-                  <div>• Head: {translatorStatus.onnx.active_models.lm_head}</div>
-                </div>
-              </div>
-            )}
-
-            {/* Backend Toggle Buttons */}
-            <div className="flex gap-2">
-              <button
-                onClick={() => toggleBackend("onnx")}
-                disabled={isTogglingBackend || !translatorStatus.onnx.available}
-                className={`flex-1 px-2 py-1.5 rounded text-sm font-medium transition ${
-                  selectedBackend === "onnx" && translatorStatus.onnx.available
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 disabled:opacity-50"
-                }`}
-              >
-                ONNX
-              </button>
-              <button
-                onClick={() => toggleBackend("nllb")}
-                disabled={isTogglingBackend}
-                className={`flex-1 px-2 py-1.5 rounded text-sm font-medium transition ${
-                  selectedBackend === "nllb"
-                    ? "bg-green-600 text-white"
-                    : "bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300"
-                }`}
-              >
-                NLLB
-              </button>
             </div>
 
             {lastBackendUsed && (
@@ -655,78 +534,109 @@ export default function TranslatorPage() {
               </div>
             )}
 
-            {!translatorStatus.onnx.available && (
-              <div className="mt-3 p-2 bg-white dark:bg-slate-800 rounded border border-blue-100 dark:border-blue-800">
-                <div className="text-xs font-semibold mb-2">ONNX models unavailable</div>
-                <div className="text-[11px] text-gray-600 dark:text-gray-400 mb-2">
-                  Download defaults (encoder w8a32 SAFE, decoder w8a32, lm_head, m2m100_lm_head.onnx.data) or pick other variants from Drive.
+            <div className="mt-3 p-2 bg-white dark:bg-slate-800 rounded text-xs">
+              <div className="font-medium text-gray-700 dark:text-gray-300 mb-1">Active Translation Model</div>
+              {selectedBackend === "onnx" ? (
+                <div className="text-gray-600 dark:text-gray-400 space-y-0.5">
+                  <div>Type: {activeOnnxFamily === "m2m" ? "M2M ONNX" : "NLLB ONNX"}</div>
+                  <div>Encoder file: {translatorStatus.onnx.active_models?.encoder || "-"}</div>
+                  <div>Decoder file: {translatorStatus.onnx.active_models?.decoder || "-"}</div>
+                  <div>LM head file: {translatorStatus.onnx.active_models?.lm_head || "-"}</div>
                 </div>
-
-                <div className="flex gap-2 mb-2">
-                  <button
-                    onClick={() => downloadOnnxModels(true)}
-                    disabled={isDownloadingOnnx || isFetchingOnnxCatalog}
-                    className="flex-1 px-2 py-1 rounded text-xs bg-indigo-600 text-white disabled:opacity-50"
-                  >
-                    {isDownloadingOnnx ? "Downloading..." : "Download Defaults"}
-                  </button>
-                  <button
-                    onClick={() => fetchOnnxCatalog(true)}
-                    disabled={isFetchingOnnxCatalog || isDownloadingOnnx}
-                    className="px-2 py-1 rounded text-xs bg-gray-200 dark:bg-gray-700"
-                  >
-                    {isFetchingOnnxCatalog ? "Refreshing..." : "Refresh List"}
-                  </button>
+              ) : (
+                <div className="text-gray-600 dark:text-gray-400 space-y-0.5">
+                  <div>Type: NLLB PyTorch</div>
+                  <div>Model: {translatorStatus.nllb.model}</div>
                 </div>
+              )}
+            </div>
 
-                <label className="flex items-center gap-2 text-[11px] mb-2">
-                  <input
-                    type="checkbox"
-                    checked={areDefaultOnnxFilesSelected}
-                    onChange={(e) => toggleDefaultOnnxSelection(e.target.checked)}
-                  />
-                  <span>Select default file set</span>
-                </label>
+            <div className="mt-3 pt-3 border-t border-blue-200 dark:border-blue-700">
+              <div className="text-xs font-semibold text-blue-800 dark:text-blue-300 mb-2">Model Download Status</div>
+              {(["m2m", "nllb"] as const).map((family) => {
+                const status = onnxCatalogStatus[family];
+                const totalFamilyCount = status?.total_family_files ?? 0;
+                const downloadedFamilyCount = status?.downloaded_family_files ?? 0;
+                const isFamilyComplete = Boolean(status?.all_family_downloaded);
+                const isDefaultComplete = Boolean(status?.all_default_downloaded);
+                const isBusy = downloadingFamily === family;
+                const isTokenizerBusy = downloadingTokenizerFamily === family;
+                const isTokenizerKnown = typeof status?.tokenizer_ready === "boolean";
+                const isTokenizerReady = Boolean(status?.tokenizer_ready);
+                const label = family === "m2m" ? "M2M ONNX" : "NLLB ONNX";
 
-                {onnxCatalog?.files?.length ? (
-                  <div className="max-h-32 overflow-y-auto border rounded p-2 bg-slate-50 dark:bg-slate-900 mb-2">
-                    {onnxCatalog.files.map((file) => (
-                      <label key={file.id} className="flex items-center gap-2 text-[11px] py-0.5">
-                        <input
-                          type="checkbox"
-                          checked={selectedOnnxFiles.includes(file.name)}
-                          onChange={() => toggleOnnxFileSelection(file.name)}
-                        />
-                        <span>{file.name}</span>
-                      </label>
-                    ))}
+                return (
+                  <div key={family} className="mb-2 p-2 rounded border bg-white dark:bg-slate-800">
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="text-xs font-medium">{label}</div>
+                      <span className={`text-[10px] px-2 py-0.5 rounded ${isDefaultComplete ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>
+                        {isDefaultComplete ? "Defaults downloaded" : "Defaults missing"}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-gray-600 dark:text-gray-400 mb-2">
+                      {status
+                        ? `${downloadedFamilyCount}/${totalFamilyCount} family files downloaded • ${isFamilyComplete ? "family complete" : "family incomplete"}`
+                        : "Checking status..."}
+                    </div>
+
+                    <div className="text-[10px] text-slate-700 dark:text-slate-200 mb-2 p-2 rounded border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-semibold">Tokenizer Status</span>
+                        <span className={!isTokenizerKnown ? "text-slate-500" : isTokenizerReady ? "text-green-600" : "text-amber-600"}>
+                          {!isTokenizerKnown ? "loading..." : isTokenizerReady ? "downloaded" : "not downloaded"}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => downloadOnnxTokenizer(family)}
+                        disabled={Boolean(downloadingFamily) || Boolean(downloadingFileKey) || Boolean(downloadingTokenizerFamily) || isTokenizerReady || !isTokenizerKnown}
+                        className="mt-1 w-full px-2 py-1 rounded bg-purple-600 text-white disabled:opacity-50"
+                      >
+                        {isTokenizerBusy
+                          ? "Downloading tokenizer..."
+                          : isTokenizerReady
+                            ? `${label} tokenizer already downloaded`
+                            : !isTokenizerKnown
+                              ? "Checking tokenizer status..."
+                              : `Download ${label} tokenizer`}
+                      </button>
+                    </div>
+
+                    {status && status.family_files_status.length > 0 && (
+                      <div className="max-h-24 overflow-y-auto mb-2 p-1 rounded border bg-slate-50 dark:bg-slate-900">
+                        {status.family_files_status.map((file) => (
+                          <div key={file.name} className="flex items-center justify-between text-[10px] py-0.5">
+                            <span className="truncate pr-2">{file.name}</span>
+                            {file.downloaded ? (
+                              <span className="text-green-600">downloaded</span>
+                            ) : (
+                              <button
+                                onClick={() => downloadSingleOnnxModel(family, file.name)}
+                                disabled={Boolean(downloadingFamily) || Boolean(downloadingFileKey)}
+                                className="px-2 py-0.5 rounded bg-amber-600 text-white disabled:opacity-50"
+                              >
+                                {downloadingFileKey === `${family}:${file.name}` ? "downloading..." : "download"}
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <button
+                      onClick={() => downloadOnnxModels(family)}
+                      disabled={Boolean(downloadingFamily) || Boolean(downloadingFileKey) || Boolean(downloadingTokenizerFamily) || isDefaultComplete}
+                      className="w-full px-2 py-1 rounded text-xs font-medium bg-indigo-600 text-white disabled:opacity-50"
+                    >
+                      {isBusy
+                        ? "Downloading defaults..."
+                        : isDefaultComplete
+                          ? `Default ${label} models already downloaded`
+                          : `Download default ${label} models`}
+                    </button>
                   </div>
-                ) : (
-                  <div className="text-[11px] text-gray-500 mb-2">
-                    {isFetchingOnnxCatalog ? "Loading available variants..." : "No variants loaded yet"}
-                  </div>
-                )}
-
-                <button
-                  onClick={() => downloadOnnxModels(false)}
-                  disabled={isDownloadingOnnx || !selectedOnnxFiles.length}
-                  className="w-full px-2 py-1 rounded text-xs bg-blue-600 text-white disabled:opacity-50"
-                >
-                  Download Selected Variants
-                </button>
-
-                {onnxCatalog?.folder_url && (
-                  <a
-                    href={onnxCatalog.folder_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="block mt-2 text-[11px] text-blue-600 dark:text-blue-300 underline"
-                  >
-                    Open Drive Folder
-                  </a>
-                )}
-              </div>
-            )}
+                );
+              })}
+            </div>
           </div>
         )}
 
@@ -771,14 +681,55 @@ export default function TranslatorPage() {
               <option value="ru">Russian → English</option>
             </select>
           </div>
+
+          <div>
+            <label className="text-xs text-gray-600 dark:text-gray-400">Benchmark Dataset</label>
+            <select
+              value={metricsDataset}
+              onChange={(e) => setMetricsDataset(e.target.value as "demo" | "flores200")}
+              className="w-full px-2 py-1.5 text-sm rounded border bg-white dark:bg-slate-700"
+            >
+              <option value="demo">Demo text (quick)</option>
+              <option value="flores200">FLORES-200 (corpus)</option>
+            </select>
+          </div>
+
+          {metricsDataset === "flores200" && (
+            <>
+              <div>
+                <label className="text-xs text-gray-600 dark:text-gray-400">FLORES Split</label>
+                <select
+                  value={floresSplit}
+                  onChange={(e) => setFloresSplit(e.target.value as "dev" | "devtest")}
+                  className="w-full px-2 py-1.5 text-sm rounded border bg-white dark:bg-slate-700"
+                >
+                  <option value="devtest">devtest</option>
+                  <option value="dev">dev</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-600 dark:text-gray-400">FLORES Samples</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={2000}
+                  value={floresSamples}
+                  onChange={(e) => setFloresSamples(Math.max(1, Number(e.target.value || 1)))}
+                  className="w-full px-2 py-1.5 text-sm rounded border bg-white dark:bg-slate-700"
+                />
+              </div>
+            </>
+          )}
           
           {/* Show ONNX models being measured */}
           {selectedBackend === "onnx" && translatorStatus?.onnx.active_models && (
             <div className="text-xs text-gray-600 dark:text-gray-400 p-2 bg-gray-100 dark:bg-gray-800 rounded">
-              <div className="font-semibold mb-1">Models to benchmark:</div>
-              <div>Encoder: {translatorStatus.onnx.active_models.encoder}</div>
-              <div>Decoder: {translatorStatus.onnx.active_models.decoder}</div>
-              <div>LM Head: {translatorStatus.onnx.active_models.lm_head}</div>
+              <div className="font-semibold mb-1">
+                {activeOnnxFamily === "m2m" ? "M2M ONNX" : "NLLB ONNX"} files used for benchmark:
+              </div>
+              <div>Encoder file: {translatorStatus.onnx.active_models.encoder}</div>
+              <div>Decoder file: {translatorStatus.onnx.active_models.decoder}</div>
+              <div>LM head file: {translatorStatus.onnx.active_models.lm_head}</div>
             </div>
           )}
           
@@ -814,6 +765,60 @@ export default function TranslatorPage() {
         {metrics && (
           <div className="mt-6">
             <h2 className="text-lg font-semibold mb-3">Translation Metrics</h2>
+            {(metrics.dataset?.name === "FLORES-200" || typeof metrics.quality?.corpus_bleu === "number") ? (
+              <div className="grid grid-cols-2 gap-4">
+                <div className="p-4 bg-slate-800 border border-slate-700 rounded-lg text-white">
+                  <h3 className="font-semibold text-blue-300 mb-2">Dataset</h3>
+                  <div className="text-sm space-y-1">
+                    <div><span className="font-medium">Name:</span> {metrics.dataset?.name || "FLORES-200"}</div>
+                    <div><span className="font-medium">Split:</span> {metrics.dataset?.split || floresSplit}</div>
+                    <div><span className="font-medium">Samples:</span> {metrics.dataset?.samples_evaluated ?? floresSamples}</div>
+                    <div><span className="font-medium">Lang:</span> {metrics.dataset?.src_lang || srcLang} → {metrics.dataset?.tgt_lang || "en"}</div>
+                    <div><span className="font-medium">Backend:</span> {String(metrics.dataset?.backend || backend).toUpperCase()}</div>
+                  </div>
+                </div>
+
+                <div className="p-4 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg">
+                  <h3 className="font-semibold text-yellow-800 dark:text-yellow-300 mb-2">FLORES Quality</h3>
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                      <div className="font-medium">Corpus BLEU</div>
+                      <div className="text-2xl font-bold text-yellow-700">{Number(metrics.quality?.corpus_bleu ?? 0).toFixed(2)}</div>
+                    </div>
+                    <div>
+                      <div className="font-medium">Corpus chrF</div>
+                      <div className="text-2xl font-bold text-yellow-700">{Number(metrics.quality?.corpus_chrf ?? 0).toFixed(2)}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="col-span-2 p-4 bg-green-50 dark:bg-green-900/20 rounded-lg">
+                  <h3 className="font-semibold text-green-800 dark:text-green-300 mb-2">FLORES Throughput</h3>
+                  <div className="grid grid-cols-4 gap-3 text-sm">
+                    <div><span className="font-medium">Avg / sentence:</span><br />{Number(metrics.throughput?.avg_time_per_sentence_s ?? 0).toFixed(4)}s</div>
+                    <div><span className="font-medium">Chars / sec:</span><br />{Number(metrics.throughput?.forward?.chars_per_sec ?? metrics.throughput?.chars_per_sec ?? 0).toFixed(2)}</div>
+                    <div><span className="font-medium">Tokens / sec:</span><br />{Number(metrics.throughput?.forward?.tokens_per_sec ?? metrics.throughput?.tokens_per_sec ?? 0).toFixed(2)}</div>
+                    <div><span className="font-medium">Total time:</span><br />{Number(metrics.throughput?.total_time_s ?? 0).toFixed(3)}s</div>
+                  </div>
+                </div>
+
+                {Array.isArray(metrics.examples) && metrics.examples.length > 0 && (
+                  <div className="col-span-2 p-4 bg-slate-50 dark:bg-slate-900/50 rounded-lg">
+                    <h3 className="font-semibold mb-2">FLORES Examples</h3>
+                    <div className="space-y-3 text-sm max-h-80 overflow-y-auto">
+                      {metrics.examples.slice(0, 5).map((ex, idx) => (
+                        <div key={idx} className="p-2 rounded bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                          <div className="text-xs text-gray-500 mb-1">Sample {idx + 1}</div>
+                          <div><span className="font-medium">Source:</span> {ex.source}</div>
+                          <div><span className="font-medium">Reference:</span> {ex.reference}</div>
+                          <div><span className="font-medium">Hypothesis:</span> {ex.hypothesis}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (metrics.input && metrics.throughput?.forward && metrics.throughput?.roundtrip && metrics.quality && metrics.memory ? (
             <div className="grid grid-cols-2 gap-4">
               {/* Input Section */}
             <div className="p-4 bg-slate-800 border border-slate-700 rounded-lg text-white">
@@ -822,13 +827,15 @@ export default function TranslatorPage() {
                   <div><span className="font-medium">Backend:</span> {metrics.input.backend?.toUpperCase() || "N/A"}</div>
                   
                   {/* Show ONNX models used if backend is ONNX */}
-                  {metrics.input.backend === "onnx" && translatorStatus?.onnx.active_models && (
+                  {(metrics.input.backend === "onnx" || metrics.input.backend === "m2m_onnx" || metrics.input.backend === "nllb_onnx") && translatorStatus?.onnx.active_models && (
                     <div className="mt-2 p-2 bg-blue-100 dark:bg-blue-800/30 rounded text-xs">
-                      <div className="font-semibold mb-1">Models Used:</div>
+                      <div className="font-semibold mb-1">
+                        {activeOnnxFamily === "m2m" ? "M2M ONNX" : "NLLB ONNX"} files used:
+                      </div>
                       <div className="ml-2 space-y-0.5">
-                        <div>• Encoder: {translatorStatus.onnx.active_models.encoder}</div>
-                        <div>• Decoder: {translatorStatus.onnx.active_models.decoder}</div>
-                        <div>• LM Head: {translatorStatus.onnx.active_models.lm_head}</div>
+                        <div>• Encoder file: {translatorStatus.onnx.active_models.encoder}</div>
+                        <div>• Decoder file: {translatorStatus.onnx.active_models.decoder}</div>
+                        <div>• LM head file: {translatorStatus.onnx.active_models.lm_head}</div>
                       </div>
                     </div>
                   )}
@@ -959,6 +966,18 @@ export default function TranslatorPage() {
                 </div>
               </div>
             </div>
+            ) : (
+              <div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-lg text-sm text-red-700 dark:text-red-300">
+                Metrics response is missing expected fields. Try measuring again or check backend response format.
+              </div>
+            ))}
+          </div>
+        )}
+
+        {metricsError && (
+          <div className="mt-6 p-4 bg-red-50 dark:bg-red-900/20 rounded-lg text-sm text-red-700 dark:text-red-300">
+            <div className="font-semibold mb-1">Metrics Error</div>
+            <div>{metricsError}</div>
           </div>
         )}
       </main>

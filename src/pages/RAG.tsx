@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import axiosInstance from "../lib/axiosInstance";
 import SystemMetrics from "../components/SystemMetrics";
 
@@ -83,8 +83,6 @@ const [searchResults, setSearchResults] = useState<RetrievalResult[]>([]);
   const [activeBackend, setActiveBackend] = useState<string>("faiss");
   const [switchingBackend, setSwitchingBackend] = useState(false);
 
-  // ✅ NEW: PDF ingest
-  const [pdfPath, setPdfPath] = useState("");
   const [pdfIngesting, setPdfIngesting] = useState(false);
 
   async function loadRag() {
@@ -135,9 +133,23 @@ const [searchResults, setSearchResults] = useState<RetrievalResult[]>([]);
         top_k: topK,
         similarity_threshold: similarity,
       });
-      const results: string[] = res.data?.results ?? [];
-      setSearchResults(results);
-      setLogs((l) => [...l, `Search found ${results.length} results (top_k=${topK}, thr=${similarity})`]);
+      const rawResults = Array.isArray(res.data?.results) ? res.data.results : [];
+      const normalizedResults: RetrievalResult[] = rawResults
+        .map((item: any, idx: number) => {
+          if (typeof item === "string") {
+            return {
+              text: item,
+              source: `result_${idx + 1}`,
+            };
+          }
+          return {
+            text: String(item?.text ?? ""),
+            source: String(item?.source ?? item?.id ?? `result_${idx + 1}`),
+          };
+        })
+        .filter((item: RetrievalResult) => item.text.trim().length > 0);
+      setSearchResults(normalizedResults);
+      setLogs((l) => [...l, `Search found ${normalizedResults.length} results (top_k=${topK}, thr=${similarity})`]);
     } catch (e: any) {
       setLogs((l) => [...l, `Failed to search RAG: ${String(e?.message || e)}`]);
     } finally {
@@ -154,9 +166,9 @@ const [searchResults, setSearchResults] = useState<RetrievalResult[]>([]);
     const form = new FormData();
     form.append("file", selectedPdf);
 
-    const res = await axiosInstance.post("/rag/pdf/upload", form, {
+      const res = await axiosInstance.post("/rag/add_pdf", form, {
       headers: { "Content-Type": "multipart/form-data" },
-      timeout: 180_000,
+      timeout: 0,
     });
 
     setLogs((l) => [
@@ -224,34 +236,6 @@ const [searchResults, setSearchResults] = useState<RetrievalResult[]>([]);
     }
   }
 
-  // ✅ NEW: PDF ingest
-  async function ingestPdf() {
-    const path = pdfPath.trim();
-    if (!path) return;
-
-    try {
-      setPdfIngesting(true);
-      setLogs((l) => [...l, `Ingesting PDF → ${path}`]);
-
-      const res = await axiosInstance.post(
-        "/rag/pdf/add",
-        { pdf_path: path },
-        { timeout: 120_000 }
-      );
-
-      setLogs((l) => [
-        ...l,
-        `PDF ingested ✅ pdf_id=${res.data?.pdf_id ?? "—"} chunks_added=${res.data?.chunks_added ?? 0}`,
-      ]);
-
-      setPdfPath("");
-      await loadRag();
-    } catch (e: any) {
-      setLogs((l) => [...l, `PDF ingest failed: ${String(e?.response?.data?.error || e?.message || e)}`]);
-    } finally {
-      setPdfIngesting(false);
-    }
-  }
 
   useEffect(() => {
     loadRag();
@@ -467,7 +451,7 @@ const [searchResults, setSearchResults] = useState<RetrievalResult[]>([]);
             <div className="mt-6">
               <h3 className="text-md font-semibold mb-2">Search Results ({searchResults.length})</h3>
               <div className="space-y-2">
-                {searchResults.map((r: any, idx) => (
+                {searchResults.map((r, idx) => (
   <div key={idx} className="border rounded">
     <button
       onClick={() =>

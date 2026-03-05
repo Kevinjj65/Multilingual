@@ -1,5 +1,5 @@
 // src/App.tsx
-import React, { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import PipelinePage from "./pages/Pipeline";
 import TranslatorPage from "./pages/Translator";
 import LLMPage from "./pages/LLM";
@@ -12,17 +12,39 @@ export type Message = {
   text: string;
 };
 
+type TranslatorModel = {
+  id: "m2m_onnx" | "nllb_onnx" | "nllb_pytorch";
+  label: string;
+  available: boolean;
+  loaded: boolean;
+};
+
+type RagModel = {
+  id: string;
+  label: string;
+  available: boolean;
+  loaded: boolean;
+};
+
+type TranslatorStatusResponse = {
+  active_translator: string;
+  active_translator_key?: "onnx" | "nllb" | "none";
+  loaded_translator_key?: "onnx" | "nllb" | "none";
+  active_onnx_family?: "m2m" | "nllb";
+  onnx_families?: {
+    m2m?: { available?: boolean };
+    nllb?: { available?: boolean };
+  };
+  nllb?: {
+    available?: boolean;
+  };
+};
+
 export default function App() {
   const [models, setModels] = useState<string[]>([]);
-  const [translatorModels, setTranslatorModels] = useState<Array<{
-    id: "onnx" | "nllb";
-    label: string;
-    available: boolean;
-    loaded: boolean;
-  }>>([]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [loadedModel, setLoadedModel] = useState<string | null>(null);
-  const [running, setRunning] = useState(false);
+  const [, setRunning] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [language, setLanguage] = useState<string>("auto");
@@ -30,11 +52,39 @@ export default function App() {
     useState<"Pipeline" | "Translator" | "LLM" | "RAG">("Pipeline");
 
   const [pipelineMetrics, setPipelineMetrics] = useState<any | null>(null);
+  const [activeOnnxFamily, setActiveOnnxFamily] = useState<"m2m" | "nllb">("m2m");
+  const [translatorModels, setTranslatorModels] = useState<TranslatorModel[]>([
+    { id: "m2m_onnx", label: "M2M ONNX", available: false, loaded: false },
+    { id: "nllb_onnx", label: "NLLB ONNX", available: false, loaded: false },
+    { id: "nllb_pytorch", label: "NLLB PyTorch", available: true, loaded: false },
+  ]);
+  const [ragModels, setRagModels] = useState<RagModel[]>([]);
+  const logSeenRef = useRef<Map<string, number>>(new Map());
+
+  const appendLog = (message: string) => {
+    const text = String(message || "").trim();
+    if (!text) return;
+    const now = Date.now();
+    const lastSeen = logSeenRef.current.get(text) || 0;
+    if (now - lastSeen < 2500) return;
+    logSeenRef.current.set(text, now);
+    setLogs((prev) => [...prev, text]);
+  };
+
+  const prettyBackendName = (value: string | null | undefined) => {
+    const raw = String(value || "none").trim();
+    if (!raw || raw.toLowerCase() === "none") return "None";
+    if (raw === "m2m_onnx") return "M2M ONNX";
+    if (raw === "nllb_onnx") return "NLLB ONNX";
+    if (raw === "nllb") return "NLLB PyTorch";
+    return raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  };
 
   useEffect(() => {
     fetchCurrentLlm();
     refreshModels();
     refreshTranslatorModels();
+    refreshRagModels();
   }, []);
 
   async function fetchCurrentLlm() {
@@ -43,9 +93,10 @@ export default function App() {
       const data = res.data || {};
       setLoadedModel(data.loaded_llm || null);
       setSelectedModel(data.loaded_llm || null);
-      setLogs((l) => [...l, `Current LLM: ${data.loaded_llm || "none"}`]);
+      const current = data.loaded_llm || "none";
+      appendLog(`LLM: Selected ${prettyBackendName(current)} | Loaded ${prettyBackendName(current)}`);
     } catch (e: any) {
-      setLogs((l) => [...l, `Failed to get current LLM: ${String(e)}`]);
+      appendLog(`LLM status error: ${String(e)}`);
     }
   }
 
@@ -55,58 +106,9 @@ export default function App() {
         .get("/list_llms")
         .then((res) => res.data.downloaded_llms);
       setModels(m);
-      setLogs((l) => [...l, `Found ${m.length} model(s)`]);
+      appendLog(`LLM Models: ${m.length} available`);
     } catch (err) {
-      setLogs((l) => [...l, `list_models error: ${String(err)}`]);
-    }
-  }
-
-  async function refreshTranslatorModels() {
-    try {
-      const res = await axiosInstance.get("/translator_status");
-      const status = res.data || {};
-      const active = status?.active_translator;
-      const onnxLabel = status?.onnx?.active_models
-        ? `ONNX: ${status.onnx.active_models.encoder}, ${status.onnx.active_models.decoder}, ${status.onnx.active_models.lm_head}`
-        : "ONNX Translator";
-
-      const next = [
-        {
-          id: "onnx" as const,
-          label: onnxLabel,
-          available: !!status?.onnx?.available,
-          loaded: active === "onnx",
-        },
-        {
-          id: "nllb" as const,
-          label: `NLLB: ${status?.nllb?.model || "facebook/nllb-200-distilled-600M"}`,
-          available: !!status?.nllb?.available,
-          loaded: active === "nllb",
-        },
-      ];
-
-      setTranslatorModels(next);
-      setLogs((l) => [...l, `Found ${next.length} translator backend(s)`]);
-    } catch (err) {
-      setTranslatorModels([]);
-      setLogs((l) => [...l, `translator_status error: ${String(err)}`]);
-    }
-  }
-
-  async function loadTranslatorModel(backend: "onnx" | "nllb") {
-    try {
-      await axiosInstance.post("/toggle_translator", { use_onnx: backend === "onnx" });
-      await axiosInstance.post(
-        "/translator_preload",
-        { use_onnx: backend === "onnx" },
-        { timeout: 0 }
-      );
-      await refreshTranslatorModels();
-      setLogs((l) => [...l, `Loaded translator: ${backend.toUpperCase()}`]);
-    } catch (err: any) {
-      const msg = err?.response?.data?.error || String(err);
-      setLogs((l) => [...l, `load_translator error: ${msg}`]);
-      await refreshTranslatorModels();
+      appendLog(`LLM list error: ${String(err)}`);
     }
   }
 
@@ -115,9 +117,9 @@ export default function App() {
       await axiosInstance.post("/load_llm", { name: modelName });
       setSelectedModel(modelName);
       setLoadedModel(modelName);
-      setLogs((l) => [...l, `Loaded ${modelName}`]);
+      appendLog(`LLM: Selected ${prettyBackendName(modelName)} | Loaded ${prettyBackendName(modelName)}`);
     } catch (err) {
-      setLogs((l) => [...l, `load_model error: ${String(err)}`]);
+      appendLog(`LLM load error: ${String(err)}`);
     }
   }
 
@@ -126,9 +128,130 @@ export default function App() {
       await axiosInstance.post("/unload_llm");
       setLoadedModel(null);
       setSelectedModel(null);
-      setLogs((l) => [...l, `Unloaded model`]);
+      appendLog("LLM: Selected None | Loaded None");
     } catch (err) {
-      setLogs((l) => [...l, `unload_model error: ${String(err)}`]);
+      appendLog(`LLM unload error: ${String(err)}`);
+    }
+  }
+
+  async function refreshTranslatorModels() {
+    try {
+      const res = await axiosInstance.get<TranslatorStatusResponse>("/translator_status");
+      const status = res.data;
+      const loadedKey = status.loaded_translator_key ?? "none";
+      const family = status.active_onnx_family === "nllb" ? "nllb" : "m2m";
+      const selectedTranslator = prettyBackendName(status.active_translator);
+      const loadedTranslator = loadedKey === "onnx"
+        ? prettyBackendName(family === "nllb" ? "nllb_onnx" : "m2m_onnx")
+        : loadedKey === "nllb"
+          ? prettyBackendName("nllb")
+          : "None";
+      setActiveOnnxFamily(family);
+
+      const nextModels: TranslatorModel[] = [
+        {
+          id: "m2m_onnx",
+          label: "M2M ONNX",
+          available: Boolean(status.onnx_families?.m2m?.available),
+          loaded: loadedKey === "onnx" && family === "m2m",
+        },
+        {
+          id: "nllb_onnx",
+          label: "NLLB ONNX",
+          available: Boolean(status.onnx_families?.nllb?.available),
+          loaded: loadedKey === "onnx" && family === "nllb",
+        },
+        {
+          id: "nllb_pytorch",
+          label: "NLLB PyTorch",
+          available: Boolean(status.nllb?.available ?? true),
+          loaded: loadedKey === "nllb",
+        },
+      ];
+      setTranslatorModels(nextModels);
+      appendLog(`Translator: Selected ${selectedTranslator} | Loaded ${loadedTranslator}`);
+    } catch (err: any) {
+      appendLog(`Translator status error: ${String(err?.message || err)}`);
+    }
+  }
+
+  async function loadTranslatorModel(id: "m2m_onnx" | "nllb_onnx" | "nllb_pytorch") {
+    try {
+      if (id === "nllb_pytorch") {
+        await axiosInstance.post(
+          "/toggle_translator",
+          { use_onnx: false },
+          { timeout: 120000 }
+        );
+      } else {
+        const family = id === "nllb_onnx" ? "nllb" : "m2m";
+        await axiosInstance.post(
+          "/toggle_translator",
+          { use_onnx: true, onnx_family: family },
+          { timeout: 120000 }
+        );
+      }
+      await refreshTranslatorModels();
+    } catch (err: any) {
+      appendLog(`Translator load error: ${String(err?.response?.data?.error || err?.message || err)}`);
+    }
+  }
+
+  async function unloadTranslatorModel() {
+    try {
+      await axiosInstance.post("/unload_translator");
+      await refreshTranslatorModels();
+    } catch (err: any) {
+      appendLog(`Translator unload error: ${String(err?.response?.data?.error || err?.message || err)}`);
+    }
+  }
+
+  async function refreshRagModels() {
+    try {
+      const res = await axiosInstance.get("/rag/backends");
+      const available: string[] = Array.isArray(res.data?.available) ? res.data.available : [];
+      const active = String(res.data?.active || "");
+      const loaded = String(res.data?.loaded || "");
+      const nextModels: RagModel[] = available.map((name) => ({
+        id: name,
+        label: name.toUpperCase(),
+        available: true,
+        loaded: name === loaded,
+      }));
+      setRagModels(nextModels);
+      appendLog(`RAG: Selected ${prettyBackendName(active)} | Loaded ${prettyBackendName(loaded || "none")}`);
+    } catch (err: any) {
+      appendLog(`RAG status error: ${String(err?.response?.data?.error || err?.message || err)}`);
+    }
+  }
+
+  async function loadRagModel(id: string) {
+    try {
+      await axiosInstance.post(
+        "/rag/backend/load",
+        { backend: id },
+        { timeout: 120000 }
+      );
+      await refreshRagModels();
+    } catch (err: any) {
+      appendLog(`RAG load error: ${String(err?.response?.data?.error || err?.message || err)}`);
+    }
+  }
+
+  async function unloadRagModel() {
+    try {
+      try {
+        await axiosInstance.post("/rag/unload_backend");
+      } catch (primaryErr: any) {
+        const status = Number(primaryErr?.response?.status || 0);
+        if (status !== 404) {
+          throw primaryErr;
+        }
+        await axiosInstance.post("/api/rag/unload_backend");
+      }
+      await refreshRagModels();
+    } catch (err: any) {
+      appendLog(`RAG unload error: ${String(err?.response?.data?.error || err?.message || err)}`);
     }
   }
 
@@ -142,21 +265,46 @@ export default function App() {
     setPipelineMetrics(null);
 
     const controller = new AbortController();
-    const STREAM_IDLE_TIMEOUT_MS = 120_000;
+    const INFER_INACTIVITY_TIMEOUT_MS = 120000;
     let timeoutId: number | null = null;
-    const resetIdleTimeout = () => {
+    const resetAbortTimer = () => {
       if (timeoutId !== null) {
         window.clearTimeout(timeoutId);
       }
-      timeoutId = window.setTimeout(() => controller.abort("timeout"), STREAM_IDLE_TIMEOUT_MS);
+      timeoutId = window.setTimeout(() => controller.abort(), INFER_INACTIVITY_TIMEOUT_MS);
     };
-    resetIdleTimeout();
+    resetAbortTimer();
 
     let revealTimer: number | null = null;
     let wordQueue: string[] = [];
+    let hasBackendError = false;
 
     try {
       setRunning(true);
+
+      try {
+        const llmState = await axiosInstance.get("/current_llm");
+        const activeLlm = llmState.data?.loaded_llm;
+        if (!activeLlm) {
+          setLoadedModel(null);
+          setSelectedModel(null);
+          setMessages((prev) => {
+            const copy = [...prev];
+            const last = copy[copy.length - 1];
+            if (last?.role === "assistant") {
+              copy[copy.length - 1] = {
+                ...last,
+                text: "LLM is not loaded. Please load an LLM model and try again.",
+              };
+            }
+            return copy;
+          });
+          setLogs((l) => [...l, "Backend error: LLM not loaded"]);
+          setRunning(false);
+          return;
+        }
+      } catch {
+      }
 
       const res = await fetch("http://localhost:5005/infer", {
         method: "POST",
@@ -167,14 +315,11 @@ export default function App() {
         body: JSON.stringify({
           text,
           lang: language === "auto" ? "auto" : language,
+          onnx_family: activeOnnxFamily,
           stream: true,
         }),
         signal: controller.signal,
       });
-
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-      }
 
       if (!res.body) throw new Error("No response body");
 
@@ -203,6 +348,7 @@ export default function App() {
 
       const processEvent = (eventData: string) => {
         try { 
+          resetAbortTimer();
           const payload = JSON.parse(eventData);
 
           if (payload.type === "meta") {
@@ -244,7 +390,9 @@ export default function App() {
         revealTimer = null;
       }
       setRunning(false);
-      setLogs((l) => [...l, "Response complete"]);
+      if (!hasBackendError) {
+        setLogs((l) => [...l, "Response complete"]);
+      }
       return;
     }
 
@@ -269,8 +417,24 @@ export default function App() {
 
 
           else if (payload.type === "error") {
+            hasBackendError = true;
             setRunning(false);
             setLogs((l) => [...l, `Backend error: ${payload.message}`]);
+            setMessages((prev) => {
+              const copy = [...prev];
+              const last = copy[copy.length - 1];
+              if (last?.role === "assistant" && !last.text) {
+                copy[copy.length - 1] = {
+                  ...last,
+                  text: String(payload.message || "Request failed"),
+                };
+              }
+              return copy;
+            });
+            if (String(payload.message || "").toLowerCase().includes("llm not loaded")) {
+              setLoadedModel(null);
+              setSelectedModel(null);
+            }
           }
         } catch (e) {
           console.error("Parse error:", e);
@@ -280,8 +444,6 @@ export default function App() {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-
-        resetIdleTimeout();
 
         buffer += decoder.decode(value, { stream: true });
         const events = buffer.split("\n\n");
@@ -301,11 +463,7 @@ export default function App() {
       }
 
     } catch (err: any) {
-      const isAbort = err?.name === "AbortError";
-      const msg = isAbort
-        ? `Stream timed out after ${STREAM_IDLE_TIMEOUT_MS / 1000}s of inactivity`
-        : String(err);
-      setLogs((l) => [...l, `Stream error: ${msg}`]);
+      setLogs((l) => [...l, `Stream error: ${String(err)}`]);
       setRunning(false);
     } finally {
       if (timeoutId !== null) {
@@ -338,19 +496,21 @@ export default function App() {
           <PipelinePage
             models={models}
             translatorModels={translatorModels}
+            ragModels={ragModels}
             selectedModel={selectedModel}
             loadedModel={loadedModel}
-            running={running}
             messages={messages}
             logs={logs}
             language={language}
             onRefreshModels={refreshModels}
             onRefreshTranslatorModels={refreshTranslatorModels}
+            onRefreshRagModels={refreshRagModels}
             onLoadTranslatorModel={loadTranslatorModel}
+            onUnloadTranslatorModel={unloadTranslatorModel}
+            onLoadRagModel={loadRagModel}
+            onUnloadRagModel={unloadRagModel}
             onLoadModel={loadModel}
             onUnloadModel={unloadModel}
-            onStartModel={() => {}}
-            onStopModel={() => {}}
             onSendMessage={sendUserMessage}
             setLanguage={setLanguage}
             pipelineMetrics={pipelineMetrics}

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 type MetricsData = {
   cpu_percent: number;
@@ -26,6 +26,35 @@ type MetricsData = {
     vms_bytes: number;
   };
 };
+
+function normalizeMetrics(payload: any): MetricsData {
+  return {
+    cpu_percent: Number(payload?.cpu_percent ?? 0),
+    ram: {
+      total_bytes: Number(payload?.ram?.total_bytes ?? 0),
+      used_bytes: Number(payload?.ram?.used_bytes ?? 0),
+      available_bytes: Number(payload?.ram?.available_bytes ?? 0),
+      percent: Number(payload?.ram?.percent ?? 0),
+    },
+    swap: {
+      total_bytes: Number(payload?.swap?.total_bytes ?? 0),
+      used_bytes: Number(payload?.swap?.used_bytes ?? 0),
+      percent: Number(payload?.swap?.percent ?? 0),
+    },
+    vram: {
+      available: Boolean(payload?.vram?.available),
+      total_bytes: Number(payload?.vram?.total_bytes ?? 0),
+      used_bytes: Number(payload?.vram?.used_bytes ?? 0),
+      reserved_bytes: Number(payload?.vram?.reserved_bytes ?? 0),
+    },
+    process: {
+      pid: Number(payload?.process?.pid ?? 0),
+      cpu_percent: Number(payload?.process?.cpu_percent ?? 0),
+      rss_bytes: Number(payload?.process?.rss_bytes ?? 0),
+      vms_bytes: Number(payload?.process?.vms_bytes ?? 0),
+    },
+  };
+}
 
 export default function SystemMetrics() {
   const [metrics, setMetrics] = useState<MetricsData | null>(null);
@@ -67,7 +96,7 @@ export default function SystemMetrics() {
               try {
                 const payload = JSON.parse(eventData);
                 if (payload.type === "metrics") {
-                  setMetrics(payload);
+                  setMetrics(normalizeMetrics(payload));
                 }
               } catch (e) {
                 console.error("Failed to parse metrics:", e);
@@ -140,7 +169,7 @@ export default function SystemMetrics() {
         <ProgressBar percent={metrics.swap.percent} label={`Swap (${formatBytes(metrics.swap.used_bytes)} / ${formatBytes(metrics.swap.total_bytes)})`} color="bg-yellow-500" />
       )}
 
-      {metrics.vram.available && (
+      {metrics.vram.available && metrics.vram.total_bytes > 0 && (
         <ProgressBar 
           percent={(metrics.vram.used_bytes / metrics.vram.total_bytes) * 100} 
           label={`VRAM (${formatBytes(metrics.vram.used_bytes)} / ${formatBytes(metrics.vram.total_bytes)})`} 
