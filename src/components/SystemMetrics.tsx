@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { buildApiUrl } from "../lib/axiosInstance";
 
 type MetricsData = {
   cpu_percent: number;
@@ -67,7 +68,7 @@ export default function SystemMetrics() {
     async function connectMetrics() {
       try {
         setConnected(false);
-        const res = await fetch("http://localhost:5005/system/metrics", {
+        const res = await fetch(buildApiUrl("/system/metrics"), {
           signal: controller.signal,
         });
 
@@ -133,14 +134,25 @@ export default function SystemMetrics() {
     return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
   };
 
-  const ProgressBar = ({ percent, label, color }: { percent: number; label: string; color: string }) => (
+  const ProgressBar = ({
+    percent,
+    label,
+    color,
+  }: {
+    percent: number;
+    label: string;
+    color: string;
+  }) => (
     <div className="mb-2">
       <div className="flex justify-between text-xs mb-1">
         <span>{label}</span>
         <span>{percent.toFixed(1)}%</span>
       </div>
       <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-        <div className={`${color} h-2 rounded-full transition-all duration-300`} style={{ width: `${percent}%` }}></div>
+        <div
+          className={`${color} h-2 rounded-full transition-all duration-300`}
+          style={{ width: `${percent}%` }}
+        ></div>
       </div>
     </div>
   );
@@ -159,21 +171,35 @@ export default function SystemMetrics() {
     <div className="p-3 bg-white dark:bg-slate-800 rounded-lg shadow border">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-semibold">System Metrics</h3>
-        <div className={`w-2 h-2 rounded-full ${connected ? "bg-green-500" : "bg-red-500"}`}></div>
+        <div
+          className={`w-2 h-2 rounded-full ${connected ? "bg-green-500" : "bg-red-500"}`}
+        ></div>
       </div>
 
-      <ProgressBar percent={metrics.cpu_percent} label="CPU" color="bg-blue-500" />
-      <ProgressBar percent={metrics.ram.percent} label={`RAM (${formatBytes(metrics.ram.used_bytes)} / ${formatBytes(metrics.ram.total_bytes)})`} color="bg-green-500" />
-      
+      <ProgressBar
+        percent={metrics.cpu_percent}
+        label="CPU"
+        color="bg-blue-500"
+      />
+      <ProgressBar
+        percent={metrics.ram.percent}
+        label={`RAM (${formatBytes(metrics.ram.used_bytes)} / ${formatBytes(metrics.ram.total_bytes)})`}
+        color="bg-green-500"
+      />
+
       {metrics.swap.total_bytes > 0 && (
-        <ProgressBar percent={metrics.swap.percent} label={`Swap (${formatBytes(metrics.swap.used_bytes)} / ${formatBytes(metrics.swap.total_bytes)})`} color="bg-yellow-500" />
+        <ProgressBar
+          percent={metrics.swap.percent}
+          label={`Swap (${formatBytes(metrics.swap.used_bytes)} / ${formatBytes(metrics.swap.total_bytes)})`}
+          color="bg-yellow-500"
+        />
       )}
 
       {metrics.vram.available && metrics.vram.total_bytes > 0 && (
-        <ProgressBar 
-          percent={(metrics.vram.used_bytes / metrics.vram.total_bytes) * 100} 
-          label={`VRAM (${formatBytes(metrics.vram.used_bytes)} / ${formatBytes(metrics.vram.total_bytes)})`} 
-          color="bg-purple-500" 
+        <ProgressBar
+          percent={(metrics.vram.used_bytes / metrics.vram.total_bytes) * 100}
+          label={`VRAM (${formatBytes(metrics.vram.used_bytes)} / ${formatBytes(metrics.vram.total_bytes)})`}
+          color="bg-purple-500"
         />
       )}
 
